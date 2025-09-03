@@ -1,0 +1,95 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model Vendor {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  username        String   @unique 
+  vendorName      String
+  phone           String
+  email           String   @unique
+  password        String
+  address         String
+  city            String
+  state           String
+  pinCode         String
+  vendorType      String   // transporter, driver, contractor, supplier
+  companyName     String
+  accountType     String
+  bankAccountNo   String
+  bankName        String
+  ifsc            String
+  accountHolder   String
+  upi             String?
+  paymentTerms    String
+  gstNumber       String?
+  gstImage        String?
+  aadharCard      String?
+  panNumber       String   @unique
+  panImage        String?
+  cancelCheque    String?
+  message         String?
+  registeredBy    String   // self / admin
+  kycBy           String?  // adminId
+  kycStatus       String   @default("pending") // pending, approved, rejected
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Customer {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  username        String   @unique 
+  customerName    String
+  phone           String
+  email           String   @unique
+  password        String
+  address         String
+  city            String
+  state           String
+  pinCode         String
+  customerType    String   // individual, govt, company
+  freightTerms    String   // Paid, ToPay, TBB, Transporter
+  companyName     String?
+  accountType     String?
+  bankAccountNo   String?
+  bankName        String?
+  ifsc            String?
+  accountHolder   String?
+  upi             String?
+  gstNumber       String?
+  gstImage        String?
+  aadharCard      String?
+  panNumber       String?  @unique
+  panImage        String?
+  cancelCheque    String?
+  paymentTerms    String?
+  message         String?
+  registeredBy    String   // self / admin
+  kycBy           String?
+  kycStatus       String   @default("pending")
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Admin {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  username    String   @unique
+  password    String
+  email       String
+  phone       String
+  address     String?
+  aadharCard  String?
+  panNumber   String?
+  photo       String?
+  permissions String[] // array of permissions like ["view_vendors", "manage_customers"]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
