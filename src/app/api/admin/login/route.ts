@@ -9,33 +9,41 @@ export async function POST(req: Request) {
   try {
     const { username, password } = await req.json();
 
-    const admin = await prisma.admin.findUnique({ where: { username } });
-    if (!admin) {
-      return NextResponse.json({ message: "Admin not found" }, { status: 404 });
+    if (!username || !password) {
+      return NextResponse.json({ message: "Missing credentials" }, { status: 400 });
     }
 
-    const valid = await bcrypt.compare(password, admin.password);
-    if (!valid) {
-      return NextResponse.json({ message: "Invalid credentials" }, { status: 401 });
+    const user = await prisma.admin.findUnique({ where: { username } });
+    if (!user) return NextResponse.json({ message: "User not found" }, { status: 404 });
+
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) return NextResponse.json({ message: "Invalid credentials" }, { status: 401 });
+
+    // Allow admin or sudo into /admin
+    if (user.role !== "admin" && user.role !== "sudo") {
+      return NextResponse.json({ message: "Not authorized" }, { status: 403 });
     }
 
     const token = jwt.sign(
-      { id: admin.id, role: "admin" },
+      { id: user.id, role: user.role },
       process.env.JWT_SECRET || "apex-secret",
-      { expiresIn: "7d" }
+      { expiresIn: "30d" } // 30 days
     );
 
-    const res = NextResponse.json({ message: "Login successful" });
+    const res = NextResponse.json({ message: "Login successful", role: user.role });
+
+    // 30-day httpOnly cookie
     res.cookies.set("admin_token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      maxAge: 7 * 24 * 60 * 60,
+      maxAge: 60 * 60 * 24 * 30, // 30 days (seconds)
       path: "/",
+      sameSite: "lax",
     });
 
     return res;
   } catch (err) {
-    console.error(err);
+    console.error("Admin login error:", err);
     return NextResponse.json({ message: "Server error" }, { status: 500 });
   }
 }

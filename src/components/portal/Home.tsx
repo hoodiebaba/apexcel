@@ -62,7 +62,7 @@ export default function Home() {
       <div className={styles.card}>
         {!selectedRole ? (
           <>
-            <h1 className={styles.title}>🚛 Apexcel Portal</h1>
+            <h1 className={styles.title}>🚛 Apexcel Move Portal</h1>
             <button className={styles.btn} onClick={() => setSelectedRole("vendor")}>
               Vendor
             </button>

@@ -80,16 +80,142 @@ model Customer {
 
 model Admin {
   id          String   @id @default(auto()) @map("_id") @db.ObjectId
-  name        String
+  name        String?
+  firstName   String?
+  lastName    String?
   username    String   @unique
   password    String
-  email       String
-  phone       String
+  email       String   @unique
+  phone       String?
+  role        String   @default("admin") // "sudo" | "admin" | "editor"
+  photo       String?  // profile picture (file URL ya base64)
+  bio         String?  // role/bio
+  socialUrls  Json?    // { "twitter": "...", "linkedin": "..." }
   address     String?
-  aadharCard  String?
-  panNumber   String?
-  photo       String?
-  permissions String[] // array of permissions like ["view_vendors", "manage_customers"]
+  country     String?
+  city        String?
+  state       String?
+  pinCode     String?
+  taxId       String?  // GST / PAN ya alag bhi ho sakta
+  accountHolder String?
+  bankName    String?
+  accountType String?
+  ifsc        String?
+  bankAccountNo String?
+  upi         String?
+  gstNumber   String?
+  permissions String[] @default([])
+  status      String   @default("active") // ✅ new field
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Load {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  loadNumber  String?  @unique
+  createdBy       String   // "sudo" | "admin" | "customer"
+  creatorName     String
+  creatorPhone    String
+  creatorEmail    String
+  creatorAddress  String
+
+  loadDate        DateTime @default(now())
+  loadTime        String?
+
+  customerPanNumber String  // Customer PAN reference
+  vendorPanNumber   String? // Vendor PAN reference
+
+  paymentTerms    String
+
+  originCities      String[]  // multiple cities allowed
+  destinationCities String[]  // multiple cities allowed
+  vehicleTypes      String[]  // multiple types allowed
+  materialTypes     String[]  // text, can be multiple
+
+  /* ✅ Sender & Receiver stored as JSON */
+  consignor Json   // { name, address, phone, gstNumber?, panNumber? }
+  consignee Json   // { name, address, phone, gstNumber?, panNumber? }
+
+  /* Invoice */
+  invoiceNumber       String?
+  invoiceDate         DateTime?
+  invoiceValue        Float?
+  invoiceDescription  String?
+  invoicePackages     Int?
+  invoiceInstructions String?
+
+  /* LR (Lorry Receipt) */
+  lrNumber       String?
+  lrDate         DateTime?
+  lrValue        Float?
+  lrDescription  String?
+  lrPackages     Int?
+  lrInstructions String?
+
+  /* Vendor details */
+  vendorName      String?
+  vendorPhone     String?
+  vendorAddress   String?
+  vendorOwnerPan  String? // Vehicle owner PAN
+
+  loadingDate     DateTime?
+  basicFreight    Float?
+  fuelCharges     Float?
+  loadingCharges  Float?
+  unloadingCharges Float?
+  detentionLoading Float?
+  detentionUnloading Float?
+  otherCharges    Float?
+  gstRate         Float?
+  subTotal        Float?
+  gstAmount       Float?
+  totalAmount     Float?
+  remarks         String?
+
+  /* Location Updates */
+  locationUpdates Json?  // [{ by:"customer", text:"Reached X city"}, ...]
+
+  /* Files */
+  lorryReceiptFile String? // pdf
+  invoiceFile      String? // pdf
+  
+  status      String   @default("pending") // ✅ new field
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/* ---------------------------
+   Wallet Model
+--------------------------- */
+model Wallet {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  
+  requestById     String   // PAN of requester
+  requestByType   String   // "vendor" | "customer" | "admin"
+  
+  requestToId     String   // PAN of receiver
+  requestToType   String   // "vendor" | "customer" | "admin"
+  
+  amount          Float
+  utrNumber       String?
+  
+  /* Banking Details */
+  bankAccountNo   String?
+  ifsc            String?
+  bankName        String?
+  accountHolder   String?
+  accountType     String?
+  upi             String?
+  qrCode          String? // media upload
+
+  /* Response */
+  responseById    String? // PAN of responder
+  responseType    String?
+  
+  paymentProof    String? // media upload
+  status          String   @default("pending") // pending, success, failed
+  remarks         String?
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

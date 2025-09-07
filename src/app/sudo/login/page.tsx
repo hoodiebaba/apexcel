@@ -1,22 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-export default function AdminLogin() {
+export default function SudoLoginPage() {
   const [error, setError] = useState("");
   const router = useRouter();
-
-  // Agar already login hai to redirect sudo panel pe
-  useEffect(() => {
-    const checkLogin = async () => {
-      const res = await fetch("/api/admin/me");
-      if (res.ok) {
-        router.replace("/sudo"); // already logged in → redirect
-      }
-    };
-    checkLogin();
-  }, [router]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -28,17 +17,23 @@ export default function AdminLogin() {
       password: form.get("password"),
     };
 
-    const res = await fetch("/api/admin/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    try {
+      const res = await fetch("/api/sudo/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        credentials: "include", // ✅ important for cookies
+      });
 
-    if (res.ok) {
-      router.replace("/sudo"); // ✅ redirect after login
-    } else {
       const data = await res.json();
-      setError(data.message || "Login failed");
+
+      if (res.ok) {
+        router.replace("/sudo"); // ✅ redirect after cookie is set
+      } else {
+        setError(data.message || "Login failed");
+      }
+    } catch (err: any) {
+      setError("Server error: " + err.message);
     }
   };
 
