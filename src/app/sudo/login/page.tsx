@@ -1,11 +1,30 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 export default function SudoLoginPage() {
   const [error, setError] = useState("");
   const router = useRouter();
+
+  // ✅ already logged-in sudo ko bounce karo
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const res = await fetch("/api/sudo/me", {
+          credentials: "include",
+          cache: "no-store", // 🚀 important
+        });
+        const data = await res.json();
+        if (res.ok && data.loggedIn && data.user?.role === "sudo") {
+          router.replace("/sudo");
+        }
+      } catch {
+        // ignore errors, stay on login
+      }
+    };
+    checkAuth();
+  }, [router]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -22,13 +41,14 @@ export default function SudoLoginPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-        credentials: "include", // ✅ important for cookies
+        credentials: "include",
+        cache: "no-store", // 🚀 avoid stale login state
       });
 
       const data = await res.json();
 
       if (res.ok) {
-        router.replace("/sudo"); // ✅ redirect after cookie is set
+        router.replace("/sudo"); // ✅ dashboard
       } else {
         setError(data.message || "Login failed");
       }
@@ -45,7 +65,9 @@ export default function SudoLoginPage() {
       >
         <h2 className="text-2xl font-bold mb-6 text-center">Sudo Login</h2>
 
-        {error && <p className="text-red-500 mb-4">{error}</p>}
+        {error && (
+          <p className="text-red-500 text-sm font-medium mb-4">{error}</p>
+        )}
 
         <input
           name="username"

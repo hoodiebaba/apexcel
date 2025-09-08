@@ -1,35 +1,48 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHeader,
-  TableRow,
+  Table, TableBody, TableCell, TableHeader, TableRow,
 } from "@/components/ui/table";
 import Badge from "@/components/ui/badge/Badge";
-import {
-  UserPlus,
-  BadgeInfo,
-  SquarePen,
-  Trash2,
-  Phone,
-  Mail,
-  X,
-} from "lucide-react";
+import { UserPlus, BadgeInfo, SquarePen, Trash2, Phone, Mail, X } from "lucide-react";
 
-interface Admin {
+/* ---------- constants shared with backend ---------- */
+const PAGES = [
+  "Dashboard",
+  "Loads",
+  "Vendor",
+  "Customer",
+  "Call",
+  "Support",
+  "Wallet",
+  "Notification",
+] as const;
+
+const ACTIONS = [
+  "page_view",
+  "view",
+  "create",
+  "edit",
+  "delete",
+  "download",
+  "search",
+] as const;
+
+type Page = (typeof PAGES)[number];
+type Action = (typeof ACTIONS)[number];
+
+type PermMatrix = Record<Page, Record<Action, boolean>>;
+
+type Admin = {
   id: string;
   name: string | null;
   firstName: string | null;
   lastName: string | null;
   username: string;
-  password: string;
   email: string;
   phone: string | null;
-  role: string;
-  photo?: string | null;
+  role: "admin" | "sudo" | string;
   bio?: string | null;
   socialUrls?: Record<string, string> | null;
   address?: string | null;
@@ -45,12 +58,26 @@ interface Admin {
   ifsc?: string | null;
   bankAccountNo?: string | null;
   upi?: string | null;
-  permissions: string[];
+  permissions: PermMatrix | string[]; // API returns matrix; keep union for safety
   createdAt: string;
   updatedAt: string;
-  status?: string;
+  status?: "active" | "inactive" | string;
+};
+
+function emptyMatrix(): PermMatrix {
+  const obj: any = {};
+  for (const p of PAGES) {
+    obj[p] = {} as any;
+    for (const a of ACTIONS) obj[p][a] = false;
+  }
+  return obj;
 }
 
+function isMatrix(x: any): x is PermMatrix {
+  return x && typeof x === "object" && PAGES.every((p) => x[p]);
+}
+
+/* UI */
 export default function AdminPage() {
   const [admins, setAdmins] = useState<Admin[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -60,23 +87,13 @@ export default function AdminPage() {
   const [editMode, setEditMode] = useState(false);
   const [createMode, setCreateMode] = useState(false);
 
-  const allPermissions = [
-    "Manage Users",
-    "Manage Settings",
-    "Access Dashboard",
-    "View Reports",
-    "Manage Content",
-  ];
-
   const loadAdmins = async () => {
-    const res = await fetch("/api/sudo/admin");
+    const res = await fetch("/api/sudo/admin", { cache: "no-store" });
     const data = await res.json();
     setAdmins(data);
   };
 
-  useEffect(() => {
-    loadAdmins();
-  }, []);
+  useEffect(() => { loadAdmins(); }, []);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) =>
@@ -95,47 +112,64 @@ export default function AdminPage() {
     loadAdmins();
   };
 
-  const handleView = () => {
+  const openView = (mode: "view" | "edit" | "create") => {
+    if (mode === "create") {
+      setViewAdmin(null);
+      setFormData({
+        role: "admin",
+        status: "Active",
+        permissions: emptyMatrix(),
+      });
+      setEditMode(true);
+      setCreateMode(true);
+      setStep(1);
+      return;
+    }
     if (selectedIds.length !== 1) return;
     const admin = admins.find((a) => a.id === selectedIds[0]) || null;
     setViewAdmin(admin);
-    setFormData(admin || {});
-    setStep(1);
-    setEditMode(false);
+    setFormData({
+      ...(admin || {}),
+      password: "", // blank in UI
+      permissions: isMatrix(admin?.permissions)
+        ? admin?.permissions
+        : emptyMatrix(),
+    } as any);
+    setEditMode(mode === "edit");
     setCreateMode(false);
+    setStep(1);
   };
 
-  const handleEdit = () => {
-    if (selectedIds.length !== 1) return;
-    const admin = admins.find((a) => a.id === selectedIds[0]) || null;
-    setViewAdmin(admin);
-    setFormData(admin || {});
-    setStep(1);
-    setEditMode(true);
-    setCreateMode(false);
+  const updateField = (field: keyof Admin, value: any) => {
+    setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleCreate = () => {
-    setViewAdmin(null);
-    setFormData({});
-    setStep(1);
-    setEditMode(true);
-    setCreateMode(true);
+  const updatePerm = (page: Page, action: Action, val: boolean) => {
+    setFormData((prev) => {
+      const matrix = isMatrix(prev.permissions) ? prev.permissions : emptyMatrix();
+      const clone: PermMatrix = JSON.parse(JSON.stringify(matrix));
+      clone[page][action] = val;
+      return { ...prev, permissions: clone };
+    });
   };
 
   const handleSave = async () => {
+    const payload: any = { ...formData };
+    // ensure role/status conform + permissions matrix sent as-is (API accepts matrix)
     if (createMode) {
-      await fetch("/api/sudo/admin", {
+      const res = await fetch("/api/sudo/admin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(payload),
       });
-    } else if (formData.id) {
-      await fetch("/api/sudo/admin", {
+      if (!res.ok) alert("Create failed");
+    } else if (payload.id) {
+      const res = await fetch("/api/sudo/admin", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(payload),
       });
+      if (!res.ok) alert("Update failed");
     }
     setViewAdmin(null);
     setEditMode(false);
@@ -143,44 +177,25 @@ export default function AdminPage() {
     loadAdmins();
   };
 
-  const updateField = (field: keyof Admin, value: any) => {
-    setFormData((prev) => ({ ...prev, [field]: value }));
-  };
+  const selectedAll = useMemo(
+    () => selectedIds.length > 0 && selectedIds.length === admins.length,
+    [selectedIds, admins]
+  );
 
   return (
     <div className="p-6">
-      {/* Buttons */}
+      {/* Actions */}
       <div className="flex items-center justify-start mb-6 gap-3">
-        <button
-          onClick={handleCreate}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 
-          text-sm font-medium text-gray-700 bg-white hover:bg-gray-100 
-          dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
-        >
+        <button onClick={() => openView("create")} className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 bg-white hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700">
           <UserPlus size={16} /> Create
         </button>
-        <button
-          onClick={handleEdit}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 
-          text-sm font-medium text-gray-700 bg-white hover:bg-gray-100 
-          dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
-        >
+        <button onClick={() => openView("edit")} className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 bg-white hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700">
           <SquarePen size={16} /> Edit
         </button>
-        <button
-          onClick={handleView}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 
-          text-sm font-medium text-gray-700 bg-white hover:bg-gray-100 
-          dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
-        >
+        <button onClick={() => openView("view")} className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 bg-white hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700">
           <BadgeInfo size={16} /> View
         </button>
-        <button
-          onClick={handleDelete}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 
-          text-sm font-medium text-gray-700 bg-white hover:bg-gray-100 
-          dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
-        >
+        <button onClick={handleDelete} className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 bg-white hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700">
           <Trash2 size={16} /> Delete
         </button>
       </div>
@@ -192,32 +207,20 @@ export default function AdminPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableCell className="px-5 py-3 w-12 text-gray-700 dark:text-gray-400">
+                  <TableCell className="px-5 py-3 w-12">
                     <input
                       type="checkbox"
                       onChange={(e) =>
-                        setSelectedIds(
-                          e.target.checked ? admins.map((a) => a.id) : []
-                        )
+                        setSelectedIds(e.target.checked ? admins.map((a) => a.id) : [])
                       }
-                      checked={
-                        selectedIds.length > 0 &&
-                        selectedIds.length === admins.length
-                      }
+                      checked={selectedAll}
                     />
                   </TableCell>
-                  <TableCell className="px-5 py-3 text-gray-700 dark:text-gray-400">
-                    Name
-                  </TableCell>
-                  <TableCell className="px-5 py-3 text-gray-700 dark:text-gray-400">
-                    Username
-                  </TableCell>
-                  <TableCell className="px-5 py-3 text-gray-700 dark:text-gray-400">
-                    Contact
-                  </TableCell>
-                  <TableCell className="px-5 py-3 text-gray-700 dark:text-gray-400">
-                    Status
-                  </TableCell>
+                  <TableCell className="px-5 py-3">Name</TableCell>
+                  <TableCell className="px-5 py-3">Username</TableCell>
+                  <TableCell className="px-5 py-3">Contact</TableCell>
+                  <TableCell className="px-5 py-3">Role</TableCell>
+                  <TableCell className="px-5 py-3">Status</TableCell>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -231,26 +234,21 @@ export default function AdminPage() {
                       />
                     </TableCell>
                     <TableCell className="px-5 py-3">
-                      <p className="font-medium text-gray-900 dark:text-gray-300">
-                        {admin.name ?? "N/A"}
-                      </p>
-                      <span className="text-xs text-gray-600 dark:text-gray-500">
-                        role - {admin.role}
-                      </span>
+                      <p className="font-medium">{admin.name ?? "N/A"}</p>
+                      <span className="text-xs text-gray-500">{admin.email}</span>
                     </TableCell>
-                    <TableCell className="px-5 py-3 text-gray-900 dark:text-gray-300">
-                      {admin.username}
-                    </TableCell>
+                    <TableCell className="px-5 py-3">{admin.username}</TableCell>
                     <TableCell className="px-5 py-3">
-                      <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                      <div className="flex items-center gap-2 text-sm">
                         <Phone size={14} /> {admin.phone ?? "-"}
                       </div>
-                      <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                      <div className="flex items-center gap-2 text-sm text-gray-500">
                         <Mail size={14} /> {admin.email}
                       </div>
                     </TableCell>
+                    <TableCell className="px-5 py-3">{admin.role}</TableCell>
                     <TableCell className="px-5 py-3">
-                      <Badge size="sm" color="success">
+                      <Badge size="sm" color={admin.status === "Inactive" ? "warning" : "success"}>
                         {admin.status ?? "Active"}
                       </Badge>
                     </TableCell>
@@ -262,14 +260,12 @@ export default function AdminPage() {
         </div>
       </div>
 
-      {/* Modal (View/Edit/Create) */}
+      {/* Modal */}
       {(viewAdmin || createMode) && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-gray-900 rounded-xl shadow-lg w-full max-w-2xl relative">
-            {/* Close */}
+          <div className="bg-white dark:bg-gray-900 rounded-xl shadow-lg w-full max-w-3xl relative">
             <button
-              className="absolute top-3 right-3 text-gray-500 hover:text-gray-800 
-              dark:text-gray-400 dark:hover:text-white"
+              className="absolute top-3 right-3 text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white"
               onClick={() => {
                 setViewAdmin(null);
                 setEditMode(false);
@@ -279,201 +275,182 @@ export default function AdminPage() {
               <X size={22} />
             </button>
 
-            {/* Steps */}
-            <div className="p-6 space-y-4">
-              {/* Step 1 - Basic Info */}
+            <div className="p-6 space-y-5">
+              {/* Step 1: Basic */}
               {step === 1 && (
                 <>
-                  <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
-                    Basic Info
-                  </h3>
-                  <div className="space-y-2">
-                    {["name", "firstName", "lastName", "username", "password", "email", "phone"].map((field) =>
+                  <h3 className="text-lg font-semibold">Basic Info</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {[
+                      ["name", "Name"],
+                      ["firstName", "First Name"],
+                      ["lastName", "Last Name"],
+                      ["username", "Username"],
+                      ["email", "Email"],
+                      ["phone", "Phone"],
+                    ].map(([k, label]) =>
                       editMode ? (
                         <input
-                          key={field}
-                          className="w-full rounded border border-gray-300 dark:border-gray-600 
-                          bg-white dark:bg-gray-800 px-3 py-2 text-sm 
-                          text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500"
-                          value={(formData as any)[field] ?? ""}
-                          onChange={(e) => updateField(field as keyof Admin, e.target.value)}
-                          placeholder={field}
-                          type={field === "password" ? "password" : "text"}
+                          key={k}
+                          className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
+                          value={(formData as any)[k] ?? ""}
+                          onChange={(e) => updateField(k as any, e.target.value)}
+                          placeholder={label}
+                          type={k === "email" ? "email" : "text"}
                         />
                       ) : (
-                        <p key={field} className="text-sm text-gray-700 dark:text-gray-400">
-                          <span className="font-medium">{field}:</span>{" "}
-                          {(viewAdmin as any)?.[field] ?? "-"}
-                        </p>
+                        <div key={k} className="text-sm">
+                          <span className="font-medium">{label}:</span> {(viewAdmin as any)?.[k] ?? "-"}
+                        </div>
                       )
+                    )}
+                    {/* Password always blank in UI */}
+                    {editMode && (
+                      <input
+                        className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
+                        value={(formData as any).password ?? ""}
+                        onChange={(e) => updateField("password" as any, e.target.value)}
+                        placeholder="Set New Password"
+                        type="password"
+                      />
                     )}
                   </div>
                 </>
               )}
 
-              {/* Step 2 - Profile */}
+              {/* Step 2: Profile */}
               {step === 2 && (
                 <>
-                  <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
-                    Profile
-                  </h3>
-                  {editMode ? (
-                    <>
-                      <select
-                        className="w-full rounded border border-gray-300 dark:border-gray-600 
-                        bg-white dark:bg-gray-800 px-3 py-2 text-sm 
-                        text-gray-900 dark:text-white"
-                        value={formData.role ?? "admin"}
-                        onChange={(e) => updateField("role", e.target.value)}
-                      >
-                        <option value="sudo">Sudo</option>
-                        <option value="admin">Admin</option>
-                        <option value="editor">Editor</option>
-                      </select>
-                      <input
-                        className="w-full rounded border border-gray-300 dark:border-gray-600 
-                        bg-white dark:bg-gray-800 px-3 py-2 text-sm 
-                        text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500"
-                        placeholder="Photo URL"
-                        value={formData.photo ?? ""}
-                        onChange={(e) => updateField("photo", e.target.value)}
-                      />
-                      <textarea
-                        className="w-full rounded border border-gray-300 dark:border-gray-600 
-                        bg-white dark:bg-gray-800 px-3 py-2 text-sm 
-                        text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500"
-                        placeholder="Bio"
-                        value={formData.bio ?? ""}
-                        onChange={(e) => updateField("bio", e.target.value)}
-                      />
-                    </>
-                  ) : (
-                    <>
-                      <p className="text-sm text-gray-700 dark:text-gray-400">Role: {viewAdmin?.role}</p>
-                      <p className="text-sm text-gray-700 dark:text-gray-400">Bio: {viewAdmin?.bio ?? "-"}</p>
-                      <p className="text-sm text-gray-700 dark:text-gray-400">Photo: {viewAdmin?.photo ?? "-"}</p>
-                    </>
-                  )}
+                  <h3 className="text-lg font-semibold">Profile</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {editMode ? (
+                      <>
+                        <select
+                          className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
+                          value={(formData.role as any) ?? "admin"}
+                          onChange={(e) => updateField("role", e.target.value)}
+                        >
+                          <option value="admin">Admin</option>
+                          <option value="sudo">Sudo</option>
+                        </select>
+                        <select
+                          className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
+                          value={(formData.status as any) ?? "active"}
+                          onChange={(e) => updateField("status", e.target.value)}
+                        >
+                          <option value="active">Active</option>
+                          <option value="inactive">Inactive</option>
+                        </select>
+                        <textarea
+                          className="sm:col-span-2 w-full h-28 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
+                          placeholder="Bio"
+                          value={(formData.bio as any) ?? ""}
+                          onChange={(e) => updateField("bio", e.target.value)}
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <div className="text-sm"><span className="font-medium">Role:</span> {viewAdmin?.role}</div>
+                        <div className="text-sm"><span className="font-medium">Status:</span> {viewAdmin?.status ?? "Active"}</div>
+                        <div className="sm:col-span-2 text-sm"><span className="font-medium">Bio:</span> {viewAdmin?.bio ?? "-"}</div>
+                      </>
+                    )}
+                  </div>
                 </>
               )}
 
-              {/* Step 3 - Address */}
+              {/* Step 3: Address */}
               {step === 3 && (
                 <>
-                  <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
-                    Address
-                  </h3>
+                  <h3 className="text-lg font-semibold">Address</h3>
                   {["address", "country", "state", "city", "pinCode"].map((field) =>
                     editMode ? (
                       <input
                         key={field}
-                        className="w-full rounded border border-gray-300 dark:border-gray-600 
-                        bg-white dark:bg-gray-800 px-3 py-2 text-sm 
-                        text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500"
+                        className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm mb-2"
                         value={(formData as any)[field] ?? ""}
-                        onChange={(e) => updateField(field as keyof Admin, e.target.value)}
+                        onChange={(e) => updateField(field as any, e.target.value)}
                         placeholder={field}
                       />
                     ) : (
-                      <p key={field} className="text-sm text-gray-700 dark:text-gray-400">
-                        <span className="font-medium">{field}:</span>{" "}
-                        {(viewAdmin as any)?.[field] ?? "-"}
-                      </p>
+                      <div key={field} className="text-sm">
+                        <span className="font-medium">{field}:</span> {(viewAdmin as any)?.[field] ?? "-"}
+                      </div>
                     )
                   )}
                 </>
               )}
 
-              {/* Step 4 - Tax & Legal */}
+              {/* Step 4: Tax & Banking */}
               {step === 4 && (
                 <>
-                  <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
-                    Tax & Legal
-                  </h3>
-                  {["taxId", "gstNumber"].map((field) =>
+                  <h3 className="text-lg font-semibold">Tax & Banking</h3>
+                  {[
+                    "taxId",
+                    "gstNumber",
+                    "accountHolder",
+                    "bankName",
+                    "accountType",
+                    "ifsc",
+                    "bankAccountNo",
+                    "upi",
+                  ].map((field) =>
                     editMode ? (
                       <input
                         key={field}
-                        className="w-full rounded border border-gray-300 dark:border-gray-600 
-                        bg-white dark:bg-gray-800 px-3 py-2 text-sm 
-                        text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500"
+                        className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm mb-2"
                         value={(formData as any)[field] ?? ""}
-                        onChange={(e) => updateField(field as keyof Admin, e.target.value)}
+                        onChange={(e) => updateField(field as any, e.target.value)}
                         placeholder={field}
                       />
                     ) : (
-                      <p key={field} className="text-sm text-gray-700 dark:text-gray-400">
-                        <span className="font-medium">{field}:</span>{" "}
-                        {(viewAdmin as any)?.[field] ?? "-"}
-                      </p>
+                      <div key={field} className="text-sm">
+                        <span className="font-medium">{field}:</span> {(viewAdmin as any)?.[field] ?? "-"}
+                      </div>
                     )
                   )}
                 </>
               )}
 
-              {/* Step 5 - Banking */}
+              {/* Step 5: Permissions */}
               {step === 5 && (
                 <>
-                  <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
-                    Banking
-                  </h3>
-                  {["accountHolder", "bankName", "accountType", "ifsc", "bankAccountNo", "upi"].map((field) =>
-                    editMode ? (
-                      <input
-                        key={field}
-                        className="w-full rounded border border-gray-300 dark:border-gray-600 
-                        bg-white dark:bg-gray-800 px-3 py-2 text-sm 
-                        text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500"
-                        value={(formData as any)[field] ?? ""}
-                        onChange={(e) => updateField(field as keyof Admin, e.target.value)}
-                        placeholder={field}
-                      />
-                    ) : (
-                      <p key={field} className="text-sm text-gray-700 dark:text-gray-400">
-                        <span className="font-medium">{field}:</span>{" "}
-                        {(viewAdmin as any)?.[field] ?? "-"}
-                      </p>
-                    )
-                  )}
-                </>
-              )}
-
-              {/* Step 6 - Permissions */}
-              {step === 6 && (
-                <>
-                  <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
-                    Permissions
-                  </h3>
-                  {editMode ? (
-                    <div className="space-y-2">
-                      {allPermissions.map((perm) => (
-                        <label key={perm} className="flex items-center gap-2 text-gray-700 dark:text-gray-400">
-                          <input
-                            type="checkbox"
-                            checked={formData.permissions?.includes(perm) ?? false}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                updateField("permissions", [
-                                  ...(formData.permissions ?? []),
-                                  perm,
-                                ]);
-                              } else {
-                                updateField(
-                                  "permissions",
-                                  (formData.permissions ?? []).filter((p) => p !== perm)
-                                );
-                              }
-                            }}
-                          />
-                          <span>{perm}</span>
-                        </label>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-sm text-gray-700 dark:text-gray-400">
-                      {viewAdmin?.permissions?.join(", ") || "-"}
-                    </p>
-                  )}
+                  <h3 className="text-lg font-semibold">Permissions</h3>
+                  <div className="overflow-x-auto w-full">
+                    <table className="w-full text-sm border border-gray-200 dark:border-gray-700 rounded-lg">
+                      <thead>
+                        <tr className="bg-gray-50 dark:bg-gray-800">
+                          <th className="text-left px-3 py-2">Page</th>
+                          {ACTIONS.map((a) => (
+                            <th key={a} className="px-3 py-2 text-center">{a}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {PAGES.map((page) => {
+                          const matrix = isMatrix(formData.permissions) ? formData.permissions : emptyMatrix();
+                          return (
+                            <tr key={page} className="border-t border-gray-200 dark:border-gray-700">
+                              <td className="px-3 py-2 font-medium">{page}</td>
+                              {ACTIONS.map((a) => (
+                                <td key={a} className="px-3 py-2 text-center">
+                                  {editMode ? (
+                                    <input
+                                      type="checkbox"
+                                      checked={matrix[page][a]}
+                                      onChange={(e) => updatePerm(page, a, e.target.checked)}
+                                    />
+                                  ) : (
+                                    <span>{matrix[page][a] ? "✓" : "—"}</span>
+                                  )}
+                                </td>
+                              ))}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </>
               )}
             </div>
@@ -483,13 +460,12 @@ export default function AdminPage() {
               <button
                 onClick={() => setStep((s) => Math.max(1, s - 1))}
                 disabled={step === 1}
-                className="px-4 py-2 rounded-lg text-sm border border-gray-300 dark:border-gray-600 
-                text-gray-700 dark:text-gray-400 disabled:opacity-50"
+                className="px-4 py-2 rounded-lg text-sm border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-400 disabled:opacity-50"
               >
                 Back
               </button>
               <div className="flex gap-2">
-                {editMode && step === 6 && (
+                {editMode && step === 5 && (
                   <button
                     onClick={handleSave}
                     className="px-4 py-2 rounded-lg text-sm bg-blue-600 text-white hover:bg-blue-700"
@@ -498,10 +474,9 @@ export default function AdminPage() {
                   </button>
                 )}
                 <button
-                  onClick={() => setStep((s) => Math.min(6, s + 1))}
-                  disabled={step === 6}
-                  className="px-4 py-2 rounded-lg text-sm border border-gray-300 dark:border-gray-600 
-                  text-gray-700 dark:text-gray-400 disabled:opacity-50"
+                  onClick={() => setStep((s) => Math.min(5, s + 1))}
+                  disabled={step === 5}
+                  className="px-4 py-2 rounded-lg text-sm border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-400 disabled:opacity-50"
                 >
                   Next
                 </button>

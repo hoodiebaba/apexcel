@@ -5,12 +5,36 @@ import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcrypt";
 import fs from "fs";
 import path from "path";
+import { cookies } from "next/headers";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 const prisma = new PrismaClient();
 
-function getUserFromAuthHeader(req: Request) {
-  const authHeader = req.headers.get("authorization");
-  const token = authHeader?.replace("Bearer ", "");
+function resolvePhoto(userId: string, dbPhoto?: string) {
+  const uploadRoot = path.join(process.cwd(), "public");
+  const dir = path.join(uploadRoot, "uploads", "profile", "sudo", userId);
+
+  if (dbPhoto && dbPhoto.startsWith("/uploads/")) {
+    const abs = path.join(uploadRoot, dbPhoto.replace(/^\/+/, ""));
+    if (fs.existsSync(abs)) return dbPhoto;
+  }
+  if (fs.existsSync(dir)) {
+    const files = fs.readdirSync(dir).filter(Boolean);
+    if (files.length) return `/uploads/profile/sudo/${userId}/${files[0]}`;
+  }
+  return "/user.png";
+}
+
+function stripSensitive(u: any) {
+  if (!u) return u;
+  const { password, permissions, createdAt, updatedAt, ...safe } = u;
+  return safe;
+}
+
+function decodeToken(token?: string | null) {
   if (!token) return null;
   try {
     return jwt.verify(token, process.env.JWT_SECRET || "apex-secret") as any;
@@ -19,140 +43,105 @@ function getUserFromAuthHeader(req: Request) {
   }
 }
 
-function resolvePhoto(userId: string, dbPhoto?: string) {
-  const uploadDir = path.join(process.cwd(), "public", "uploads", "profile", "sudo", userId);
+async function getDecodedFromReq(req: Request) {
+  // 1) try Authorization: Bearer
+  const authHeader = req.headers.get("authorization");
+  const bearer = authHeader?.startsWith("Bearer ")
+    ? authHeader.slice(7)
+    : null;
+  let decoded = decodeToken(bearer);
+  if (decoded) return decoded;
 
-  if (dbPhoto && dbPhoto.startsWith("/uploads/")) {
-    const abs = path.join(process.cwd(), "public", dbPhoto);
-    if (fs.existsSync(abs)) return dbPhoto;
-  }
-
-  if (fs.existsSync(uploadDir)) {
-    const files = fs.readdirSync(uploadDir);
-    if (files.length > 0) {
-      return `/uploads/profile/sudo/${userId}/${files[0]}`;
-    }
-  }
-
-  return "/user.png";
+  // 2) fall back to httpOnly cookie
+  const cookieStore = await cookies();
+  const cookieToken = cookieStore.get("sudo_token")?.value;
+  decoded = decodeToken(cookieToken);
+  return decoded;
 }
 
-// ✅ GET profile
+// ---------- GET (prefill) ----------
 export async function GET(req: Request) {
-  const decoded = getUserFromAuthHeader(req);
-  if (!decoded)
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const decoded = await getDecodedFromReq(req);
+  if (!decoded) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const user = await prisma.admin.findUnique({ where: { id: decoded.id } });
-  if (!user)
-    return NextResponse.json({ error: "User not found" }, { status: 404 });
+  if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+  if (user.role !== "sudo") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-  if (user.role !== "sudo")
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const photo = resolvePhoto(user.id, user.photo ?? undefined);
+  const safe = stripSensitive(user);
 
-  const photoPath = resolvePhoto(decoded.id, user.photo ?? undefined);
-
-  return NextResponse.json({
-    user: { ...user, name: user.name || "", photo: photoPath },
-  });
+  return NextResponse.json({ user: { ...safe, name: user.name || "", photo } });
 }
 
-// ✅ POST profile update
+// ---------- POST (update) ----------
 export async function POST(req: Request) {
-  const decoded = getUserFromAuthHeader(req);
-  if (!decoded)
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const decoded = await getDecodedFromReq(req);
+  if (!decoded) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const dbUser = await prisma.admin.findUnique({ where: { id: decoded.id } });
-  if (!dbUser)
-    return NextResponse.json({ error: "User not found" }, { status: 404 });
-
-  if (dbUser.role !== "sudo")
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!dbUser) return NextResponse.json({ error: "User not found" }, { status: 404 });
+  if (dbUser.role !== "sudo") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const contentType = req.headers.get("content-type") || "";
-  let updateData: any = {};
+  let dataToUpdate: any = {};
 
   try {
     if (contentType.includes("multipart/form-data")) {
       const formData = await req.formData();
       const file = formData.get("file") as File | null;
 
-      if (file) {
+      if (file && file.size > 0) {
         const uploadDir = path.join(process.cwd(), "public", "uploads", "profile", "sudo", decoded.id);
-        fs.mkdirSync(uploadDir, { recursive: true });
-
-        fs.readdirSync(uploadDir).forEach((f) =>
-          fs.unlinkSync(path.join(uploadDir, f))
-        );
-
-        const ext = path.extname(file.name) || ".jpg";
+        if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+        for (const f of fs.readdirSync(uploadDir)) {
+          try { fs.unlinkSync(path.join(uploadDir, f)); } catch {}
+        }
+        const ext = (path.extname(file.name || "") || ".jpg").toLowerCase();
         const filePath = path.join(uploadDir, `profile${ext}`);
         const buffer = Buffer.from(await file.arrayBuffer());
         fs.writeFileSync(filePath, buffer);
 
-        updateData.photo = `/uploads/profile/sudo/${decoded.id}/profile${ext}`;
+        dataToUpdate.photo = `/uploads/profile/sudo/${decoded.id}/profile${ext}`;
       }
 
       formData.forEach((val, key) => {
         if (key === "file") return;
-        if (key === "password" && val) {
-          updateData.password = bcrypt.hashSync(val.toString(), 10);
-        } else if (key === "name") {
-          updateData.name = val.toString().trim();
-        } else {
-          updateData[key] = val.toString();
+        const str = typeof val === "string" ? val : "";
+        if (key === "password") {
+          if (str.trim()) dataToUpdate.password = bcrypt.hashSync(str.trim(), 10);
+          return;
         }
+        if (["role", "status", "permissions", "id", "createdAt", "updatedAt"].includes(key)) return;
+        dataToUpdate[key] = str;
       });
     } else {
       const body = await req.json();
-      const { password, name, photo, ...rest } = body;
-
-      if (password?.trim()) {
-        updateData.password = await bcrypt.hash(password, 10);
+      const { password, role, status, permissions, id, createdAt, updatedAt, ...rest } = body || {};
+      if (password && String(password).trim()) {
+        dataToUpdate.password = await bcrypt.hash(String(password).trim(), 10);
       }
-      if (name) {
-        updateData.name = name.trim();
-      }
-      updateData = { ...updateData, ...rest };
+      Object.assign(dataToUpdate, rest);
     }
 
-    delete updateData.id;
-    delete updateData.createdAt;
-    delete updateData.updatedAt;
-    if (!updateData.photo) delete updateData.photo;
-
-    if (updateData.permissions !== undefined) {
-      if (
-        updateData.permissions === "" ||
-        updateData.permissions === "null" ||
-        updateData.permissions === null
-      ) {
-        updateData.permissions = [];
-      } else if (typeof updateData.permissions === "string") {
-        updateData.permissions = updateData.permissions
-          .split(",")
-          .map((p: string) => p.trim())
-          .filter((p: string) => p.length > 0);
-      }
-    }
+    delete dataToUpdate.id;
+    delete dataToUpdate.role;
+    delete dataToUpdate.status;
+    delete dataToUpdate.permissions;
+    delete dataToUpdate.createdAt;
+    delete dataToUpdate.updatedAt;
 
     const updated = await prisma.admin.update({
       where: { id: decoded.id },
-      data: updateData,
+      data: dataToUpdate,
     });
 
-    const photoPath = resolvePhoto(decoded.id, updated.photo ?? undefined);
+    const photo = resolvePhoto(decoded.id, updated.photo ?? undefined);
+    const safe = stripSensitive(updated);
 
-    return NextResponse.json({
-      success: true,
-      user: { ...updated, name: updated.name || "", photo: photoPath },
-    });
+    return NextResponse.json({ success: true, user: { ...safe, name: updated.name || "", photo } });
   } catch (err) {
-    console.error("Update failed:", err);
-    return NextResponse.json(
-      { error: "Update failed", details: String(err) },
-      { status: 500 }
-    );
+    console.error("SUDO_PROFILE_UPDATE_FAILED", err);
+    return NextResponse.json({ error: "Update failed", details: String(err) }, { status: 500 });
   }
 }

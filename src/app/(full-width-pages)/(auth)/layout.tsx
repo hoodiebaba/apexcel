@@ -30,8 +30,7 @@ export default function AuthLayout({
                   />
                 </Link>
                 <p className="text-center text-gray-400 dark:text-white/60">
-                  Free and Open-Source Tailwind CSS Admin Dashboard Template
-                </p>
+#1 Premier Freight Brokerage Company Delivering Efficiency and Growth               </p>
               </div>
             </div>
           </div>

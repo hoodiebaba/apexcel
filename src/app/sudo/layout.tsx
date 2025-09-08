@@ -10,33 +10,37 @@ import { useRouter, usePathname } from "next/navigation";
 export default function SudoLayout({ children }: { children: React.ReactNode }) {
   const { isExpanded, isHovered, isMobileOpen } = useSidebar();
   const [authorized, setAuthorized] = useState(false);
+
   const router = useRouter();
   const pathname = usePathname();
+  const isLoginRoute = pathname === "/sudo/login";
 
   useEffect(() => {
-    if (pathname === "/sudo/login") return; // skip login page
+    if (!pathname || isLoginRoute) return;
 
     const checkAuth = async () => {
       try {
         const res = await fetch("/api/sudo/me", {
-          credentials: "include", // ✅ send cookie
+          credentials: "include",
+          cache: "no-store", // 🚫 no stale cache (fixes auto-login after logout)
         });
         const data = await res.json();
-
         if (res.ok && data?.loggedIn && data.user?.role === "sudo") {
           setAuthorized(true);
         } else {
+          setAuthorized(false);
           router.replace("/sudo/login");
         }
       } catch {
+        setAuthorized(false);
         router.replace("/sudo/login");
       }
     };
 
     checkAuth();
-  }, [router, pathname]);
+  }, [pathname, isLoginRoute, router]);
 
-  if (pathname === "/sudo/login") return <>{children}</>;
+  if (isLoginRoute) return <>{children}</>;
 
   if (!authorized) {
     return (

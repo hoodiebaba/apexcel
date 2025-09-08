@@ -7,8 +7,8 @@ import { DropdownItem } from "../ui/dropdown/DropdownItem";
 export default function UserDropdownSudo() {
   const [isOpen, setIsOpen] = useState(false);
   const [user, setUser] = useState({
-    name: "Loading...",
-    email: "",
+    name: "Sudo User",
+    email: "sudo@apexcel.com",
     photo: "/user.png",
   });
 
@@ -17,50 +17,54 @@ export default function UserDropdownSudo() {
     setIsOpen((prev) => !prev);
   };
 
-  const closeDropdown = () => {
-    setIsOpen(false);
-  };
+  const closeDropdown = () => setIsOpen(false);
 
-  // ✅ Fetch sudo profile with token
+  // ✅ Sudo profile via httpOnly cookie
   useEffect(() => {
-    const token =
-      typeof window !== "undefined" ? localStorage.getItem("sudo_token") : null;
-    if (!token) return;
-
-    fetch("/api/sudo/profile", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-      .then(async (res) => {
-        if (!res.ok) throw new Error("Unauthorized");
+    let abort = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/sudo/me", {
+          credentials: "include",
+          cache: "no-store",
+        });
+        if (!res.ok) return; // not logged in
         const data = await res.json();
+        if (abort) return;
         if (data?.user) {
           setUser({
             name: data.user.name || "Sudo User",
             email: data.user.email || "sudo@apexcel.com",
             photo:
               data.user.photo &&
-              data.user.photo.trim() !== "" &&
+              String(data.user.photo).trim() !== "" &&
               data.user.photo !== "null"
                 ? data.user.photo
                 : "/user.png",
           });
         }
-      })
-      .catch(() => {
-        setUser({
-          name: "Sudo User",
-          email: "sudo@apexcel.com",
-          photo: "/user.png",
-        });
-      });
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      abort = true;
+    };
   }, []);
 
-  const handleLogout = () => {
-    // ✅ Local logout (clear token + redirect)
-    localStorage.removeItem("sudo_token");
-    window.location.href = "/sudo/login";
+  // ✅ Proper logout: server cookie clear + redirect
+  const handleLogout = async () => {
+    try {
+      await fetch("/api/sudo/logout", {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+      });
+    } catch {
+      // even if fail, hard redirect to break any client cache
+    } finally {
+      window.location.href = "/"; // Phase-1 rule: logout → "/"
+    }
   };
 
   return (
@@ -128,17 +132,17 @@ export default function UserDropdownSudo() {
             </DropdownItem>
           </li>
           <li>
-            <DropdownItem
-              onItemClick={closeDropdown}
-              tag="a"
-              href="https://www.kalpitevolution.com/contact"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-3 px-3 py-2 font-medium text-gray-700 rounded-lg group text-theme-sm hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-gray-300"
-            >
-              Support
-            </DropdownItem>
-          </li>
+  <DropdownItem
+    onItemClick={() => {
+      window.open("https://www.kalpitevolution.com/contact", "_blank", "noopener,noreferrer");
+    }}
+    tag="a"
+    href="#"
+    className="flex items-center gap-3 px-3 py-2 font-medium text-gray-700 rounded-lg group text-theme-sm hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-gray-300"
+  >
+    Support
+  </DropdownItem>
+</li>
         </ul>
 
         {/* Sign out */}

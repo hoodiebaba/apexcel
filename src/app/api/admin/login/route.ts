@@ -1,9 +1,8 @@
+// src/app/api/admin/login/route.ts
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-
-const prisma = new PrismaClient();
+import prisma from "@/lib/prisma"; // ✅ singleton prisma
 
 export async function POST(req: Request) {
   try {
@@ -19,15 +18,16 @@ export async function POST(req: Request) {
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return NextResponse.json({ message: "Invalid credentials" }, { status: 401 });
 
-    // Allow admin or sudo into /admin
+    // allow admin or sudo
     if (user.role !== "admin" && user.role !== "sudo") {
       return NextResponse.json({ message: "Not authorized" }, { status: 403 });
     }
 
+    // 30 days token
     const token = jwt.sign(
       { id: user.id, role: user.role },
       process.env.JWT_SECRET || "apex-secret",
-      { expiresIn: "30d" } // 30 days
+      { expiresIn: "30d" }
     );
 
     const res = NextResponse.json({ message: "Login successful", role: user.role });
@@ -36,9 +36,9 @@ export async function POST(req: Request) {
     res.cookies.set("admin_token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      maxAge: 60 * 60 * 24 * 30, // 30 days (seconds)
-      path: "/",
       sameSite: "lax",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 30,
     });
 
     return res;

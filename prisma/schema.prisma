@@ -151,7 +151,13 @@ model Load {
   lrDescription  String?
   lrPackages     Int?
   lrInstructions String?
-
+  
+  /*Customer details*/
+  customerName      String?
+  customerPhone     String?
+  customerAddress   String?
+  customerOwnerPan  String? // Vehicle owner PAN
+  
   /* Vendor details */
   vendorName      String?
   vendorPhone     String?
