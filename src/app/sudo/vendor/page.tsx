@@ -1,4 +1,3 @@
-// /src/app/sudo/vendor/page.tsx
 "use client";
 
 import React, { useEffect, useState } from "react";
@@ -31,6 +30,8 @@ type Me = {
 
 type Vendor = {
   id: string;
+  firstName?: string | null;
+  lastName?: string | null;
   vendorName: string;
   username: string;
   phone: string;
@@ -175,13 +176,18 @@ function KycBadge({ status }: { status: KycStatus }) {
   return <span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${map[status]}`}>{status}</span>;
 }
 
-/* ----------- KYC By label: show role + name/self ----------- */
+/* ----------- KYC By label ----------- */
 function kycByLabel(kycBy?: string | null) {
   if (!kycBy) return "-";
-  // expected format: "role:name" OR "self:name"
   const [role, name] = String(kycBy).split(":");
   if (role && name) return `${role} ${name}`;
   return kycBy;
+}
+function roleName(me?: Me | null) {
+  if (!me) return "admin:";
+  const role = me.role === "customer" ? "self" : me.role || "admin";
+  const name = me.name || me.username || "";
+  return `${role}:${name}`;
 }
 
 /* ---------------- Modal ---------------- */
@@ -205,6 +211,11 @@ function VendorModal({
   const canEdit = mode !== "view";
   const isCreate = mode === "create";
 
+  // Always reset to step-1 on open
+  useEffect(() => {
+    if (open) setStep(1);
+  }, [open]);
+
   useEffect(() => {
     if (!open) return;
     (async () => {
@@ -214,16 +225,16 @@ function VendorModal({
 
       if (isCreate) {
         setForm({
-          registeredBy: "admin",
+          registeredBy: roleName(m), // role:name
           kycStatus: "pending",
         });
       } else if (selectedId) {
         const r = await fetch(`/api/sudo/vendor?id=${selectedId}`);
-        const v = await r.json();
+        const v: Vendor & any = await r.json();
         setForm({
           id: v.id,
-          firstName: "",
-          lastName: "",
+          firstName: v.firstName || "",
+          lastName: v.lastName || "",
           username: v.username,
           email: v.email,
           phone: v.phone,
@@ -245,10 +256,9 @@ function VendorModal({
           gstNumber: v.gstNumber || "",
           panNumber: v.panNumber || "",
           message: v.message || "",
-          registeredBy: v.registeredBy || "admin",
+          registeredBy: v.registeredBy || roleName(m),
           kycBy: v.kycBy || "",
-          kycStatus: v.kycStatus || "pending",
-          // for previews in view/edit
+          kycStatus: (v.kycStatus || "pending") as KycStatus,
           panImage: v.panImage || null,
           gstImage: v.gstImage || null,
           aadharCard: v.aadharCard || null,
@@ -264,12 +274,17 @@ function VendorModal({
 
   async function save() {
     const fd = new FormData();
+
+    // Include id on edit
+    if (!isCreate && form.id) fd.append("id", form.id);
+
     // simple fields
     Object.entries(form).forEach(([k, v]) => {
       if (v === undefined || v === null) return;
-      if (v instanceof File) return;
+      if (v instanceof File) return; // files appended below
       if (typeof v === "string") fd.append(k, v);
     });
+
     // files
     if (form.panImage instanceof File) fd.append("panImage", form.panImage);
     if (form.gstImage instanceof File) fd.append("gstImage", form.gstImage);
@@ -289,12 +304,13 @@ function VendorModal({
 
   function openDoc(type: "pan" | "gst" | "aadhar" | "cheque") {
     if (!form.id) return;
-    // hits secured API → resolves to public URL / streams; opens new tab
     const url = `/api/sudo/vendor/file?id=${form.id}&type=${type}`;
     window.open(url, "_blank", "noopener,noreferrer");
   }
 
   if (!open) return null;
+
+  const lockIdentity = !isCreate || !canEdit; // lock username/email/pan on edit/view
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
@@ -335,8 +351,8 @@ function VendorModal({
             <div className="grid md:grid-cols-3 gap-3 min-w-[900px]">
               <Input placeholder="First Name*" value={form.firstName || ""} onChange={(e) => set("firstName", e.target.value)} disabled={!canEdit} />
               <Input placeholder="Last Name*" value={form.lastName || ""} onChange={(e) => set("lastName", e.target.value)} disabled={!canEdit} />
-              <Input placeholder="Username*" value={form.username || ""} onChange={(e) => set("username", e.target.value)} disabled={!canEdit} />
-              <Input placeholder="Email*" value={form.email || ""} onChange={(e) => set("email", e.target.value)} disabled={!canEdit} />
+              <Input placeholder="Username*" value={form.username || ""} onChange={(e) => set("username", e.target.value)} disabled={lockIdentity} />
+              <Input placeholder="Email*" value={form.email || ""} onChange={(e) => set("email", e.target.value)} disabled={lockIdentity} />
               <Input placeholder="Phone*" value={form.phone || ""} onChange={(e) => set("phone", e.target.value)} disabled={!canEdit} />
               <Input placeholder="Password*" type="password" value={form.password || ""} onChange={(e) => set("password", e.target.value)} disabled={!canEdit} />
             </div>
@@ -385,83 +401,43 @@ function VendorModal({
             </div>
           )}
 
-          {/* Step 5: Tax & Uploads (improved layout) */}
+          {/* Step 5: Tax & Uploads */}
           {step === 5 && (
             <div className="grid md:grid-cols-2 gap-4 min-w-[900px]">
-              {/* Card 1: Numbers */}
               <div className="rounded-xl border dark:border-gray-700 p-4 space-y-3">
                 <div className="text-sm font-medium opacity-80">Tax Details</div>
                 <div className="grid md:grid-cols-2 gap-3">
                   <Input placeholder="GST Number" value={form.gstNumber || ""} onChange={(e) => set("gstNumber", e.target.value)} disabled={!canEdit} />
-                  <Input placeholder="PAN Number*" value={form.panNumber || ""} onChange={(e) => set("panNumber", e.target.value)} disabled={!canEdit} />
+                  <Input placeholder="PAN Number*" value={form.panNumber || ""} onChange={(e) => set("panNumber", e.target.value)} disabled={lockIdentity} />
                 </div>
                 <div className="h-px bg-gray-200 dark:bg-gray-700 my-2" />
                 <div className="text-sm font-medium opacity-80">Uploads</div>
                 <div className="grid gap-3">
-                  <FilePicker
-                    label="PAN Image"
-                    accept="image/*,application/pdf"
-                    disabled={!canEdit}
-                    value={form.panImage || null}
-                    onChange={(f) => set("panImage", f)}
-                  />
-                  <FilePicker
-                    label="GST Image"
-                    accept="image/*,application/pdf"
-                    disabled={!canEdit}
-                    value={form.gstImage || null}
-                    onChange={(f) => set("gstImage", f)}
-                  />
+                  <FilePicker label="PAN Image" accept="image/*,application/pdf" disabled={!canEdit} value={form.panImage || null} onChange={(f) => set("panImage", f)} />
+                  <FilePicker label="GST Image" accept="image/*,application/pdf" disabled={!canEdit} value={form.gstImage || null} onChange={(f) => set("gstImage", f)} />
                 </div>
               </div>
 
-              {/* Card 2: IDs + Notes */}
               <div className="rounded-xl border dark:border-gray-700 p-4 space-y-3">
                 <div className="text-sm font-medium opacity-80">Identity & Notes</div>
                 <div className="grid gap-3">
-                  <FilePicker
-                    label="Aadhar Card"
-                    accept="image/*,application/pdf"
-                    disabled={!canEdit}
-                    value={form.aadharCard || null}
-                    onChange={(f) => set("aadharCard", f)}
-                  />
-                  <FilePicker
-                    label="Cancel Cheque"
-                    accept="image/*,application/pdf"
-                    disabled={!canEdit}
-                    value={form.cancelCheque || null}
-                    onChange={(f) => set("cancelCheque", f)}
-                  />
-                  <Textarea
-                    placeholder="Message / Notes"
-                    value={form.message || ""}
-                    onChange={(e) => set("message", e.target.value)}
-                    disabled={!canEdit}
-                  />
+                  <FilePicker label="Aadhar Card" accept="image/*,application/pdf" disabled={!canEdit} value={form.aadharCard || null} onChange={(f) => set("aadharCard", f)} />
+                  <FilePicker label="Cancel Cheque" accept="image/*,application/pdf" disabled={!canEdit} value={form.cancelCheque || null} onChange={(f) => set("cancelCheque", f)} />
+                  <Textarea placeholder="Message / Notes" value={form.message || ""} onChange={(e) => set("message", e.target.value)} disabled={!canEdit} />
                   <div className="grid md:grid-cols-2 gap-3">
-                    <Select
-                      value={form.kycStatus || "pending"}
-                      onChange={(e) => set("kycStatus", e.target.value as KycStatus)}
-                      disabled={!canEdit}
-                    >
+                    <Select value={form.kycStatus || "pending"} onChange={(e) => set("kycStatus", e.target.value as KycStatus)} disabled={!canEdit}>
                       <option value="pending">pending</option>
                       <option value="approved">approved</option>
                       <option value="rejected">rejected</option>
                     </Select>
-                    <Input
-                      placeholder="Registered By (self/admin)"
-                      value={form.registeredBy || "admin"}
-                      onChange={(e) => set("registeredBy", e.target.value)}
-                      disabled={!canEdit}
-                    />
+                    <Input placeholder="Registered By (role:name)" value={form.registeredBy || ""} onChange={(e) => set("registeredBy", e.target.value)} disabled={!canEdit} />
                   </div>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Step 6: Audit & Downloads (View mode) */}
+          {/* Step 6: Audit & Downloads */}
           {step === 6 && (
             <div className="grid gap-4 min-w-[900px]">
               <div className="rounded-xl border dark:border-gray-700 p-4 grid md:grid-cols-3 gap-3 text-sm">
@@ -483,28 +459,16 @@ function VendorModal({
                 <div className="rounded-xl border dark:border-gray-700 p-4">
                   <div className="mb-3 text-sm font-medium">Vendor Documents</div>
                   <div className="flex flex-wrap gap-2">
-                    <button
-                      className="flex items-center gap-2 px-3 py-2 rounded-lg border text-sm dark:border-gray-700"
-                      onClick={() => openDoc("pan")}
-                    >
+                    <button className="flex items-center gap-2 px-3 py-2 rounded-lg border text-sm dark:border-gray-700" onClick={() => openDoc("pan")}>
                       <Download size={14} /> PAN
                     </button>
-                    <button
-                      className="flex items-center gap-2 px-3 py-2 rounded-lg border text-sm dark:border-gray-700"
-                      onClick={() => openDoc("gst")}
-                    >
+                    <button className="flex items-center gap-2 px-3 py-2 rounded-lg border text-sm dark:border-gray-700" onClick={() => openDoc("gst")}>
                       <Download size={14} /> GST
                     </button>
-                    <button
-                      className="flex items-center gap-2 px-3 py-2 rounded-lg border text-sm dark:border-gray-700"
-                      onClick={() => openDoc("aadhar")}
-                    >
+                    <button className="flex items-center gap-2 px-3 py-2 rounded-lg border text-sm dark:border-gray-700" onClick={() => openDoc("aadhar")}>
                       <Download size={14} /> Aadhar
                     </button>
-                    <button
-                      className="flex items-center gap-2 px-3 py-2 rounded-lg border text-sm dark:border-gray-700"
-                      onClick={() => openDoc("cheque")}
-                    >
+                    <button className="flex items-center gap-2 px-3 py-2 rounded-lg border text-sm dark:border-gray-700" onClick={() => openDoc("cheque")}>
                       <Download size={14} /> Cancel Cheque
                     </button>
                   </div>
@@ -515,11 +479,7 @@ function VendorModal({
         </div>
 
         <div className="p-4 border-t dark:border-gray-700 flex items-center justify-between">
-          <button
-            className="px-4 py-2 rounded-lg text-sm border dark:border-gray-700"
-            onClick={() => setStep((s) => Math.max(1, s - 1))}
-            disabled={step === 1}
-          >
+          <button className="px-4 py-2 rounded-lg text-sm border dark:border-gray-700" onClick={() => setStep((s) => Math.max(1, s - 1))} disabled={step === 1}>
             Back
           </button>
           <div className="flex items-center gap-2">
@@ -528,13 +488,12 @@ function VendorModal({
                 Save
               </button>
             )}
-            <button
-              className="px-4 py-2 rounded-lg text-sm border dark:border-gray-700"
-              onClick={() => setStep((s) => Math.min(6, s + 1))}
-              disabled={step === 6}
-            >
-              Next
-            </button>
+            {/* hide Next on last step entirely */}
+            {step < 6 && (
+              <button className="px-4 py-2 rounded-lg text-sm border dark:border-gray-700" onClick={() => setStep((s) => Math.min(6, s + 1))}>
+                Next
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -618,7 +577,7 @@ export default function VendorPage() {
 
   return (
     <div className="p-6">
-      {/* Top: 4 Buttons (no search) */}
+      {/* Top: 4 Buttons */}
       <div className="flex flex-wrap items-center gap-3 mb-6">
         <button
           onClick={openCreate}
@@ -669,7 +628,7 @@ export default function VendorPage() {
         </button>
       </div>
 
-      {/* Table with horizontal scroll */}
+      {/* Table */}
       <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
         <div className="min-w-[1000px]">
           <table className="w-full text-sm table-auto">
@@ -691,17 +650,11 @@ export default function VendorPage() {
                   <td className="px-5 py-3">
                     <input type="checkbox" checked={selectedIds.includes(v.id)} onChange={() => toggleSelect(v.id)} />
                   </td>
-
-                  {/* ID (PAN preferred) */}
                   <td className="px-5 py-3 text-gray-900 dark:text-gray-300">{v.panNumber || v.id}</td>
-
-                  {/* Name / Username */}
                   <td className="px-5 py-3">
                     <p className="font-medium text-gray-900 dark:text-gray-300">{v.vendorName}</p>
                     <span className="text-xs text-gray-600 dark:text-gray-500">{v.username}</span>
                   </td>
-
-                  {/* Contact / Mail */}
                   <td className="px-5 py-3">
                     <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
                       <Phone size={14} /> {v.phone}
@@ -710,17 +663,12 @@ export default function VendorPage() {
                       <Mail size={14} /> {v.email}
                     </div>
                   </td>
-
-                  {/* KYC By (role + name/self) */}
                   <td className="px-5 py-3 text-gray-900 dark:text-gray-300">{kycByLabel(v.kycBy)}</td>
-
-                  {/* KYC Status */}
                   <td className="px-5 py-3">
                     <KycBadge status={(v.kycStatus || "pending") as KycStatus} />
                   </td>
                 </tr>
               ))}
-
               {rows.length === 0 && (
                 <tr>
                   <td className="px-5 py-6 text-center text-gray-500 dark:text-gray-400" colSpan={6}>

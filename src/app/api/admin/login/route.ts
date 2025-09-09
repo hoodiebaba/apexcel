@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import prisma from "@/lib/prisma"; // ✅ singleton prisma
+import prisma from "@/lib/prisma";
 
 export async function POST(req: Request) {
   try {
@@ -15,15 +15,18 @@ export async function POST(req: Request) {
     const user = await prisma.admin.findUnique({ where: { username } });
     if (!user) return NextResponse.json({ message: "User not found" }, { status: 404 });
 
+    // ❗ status gate
+    if (user.status !== "active") {
+      return NextResponse.json({ message: "Account is inactive" }, { status: 403 });
+    }
+
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return NextResponse.json({ message: "Invalid credentials" }, { status: 401 });
 
-    // allow admin or sudo
     if (user.role !== "admin" && user.role !== "sudo") {
       return NextResponse.json({ message: "Not authorized" }, { status: 403 });
     }
 
-    // 30 days token
     const token = jwt.sign(
       { id: user.id, role: user.role },
       process.env.JWT_SECRET || "apex-secret",
@@ -32,7 +35,6 @@ export async function POST(req: Request) {
 
     const res = NextResponse.json({ message: "Login successful", role: user.role });
 
-    // 30-day httpOnly cookie
     res.cookies.set("admin_token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",

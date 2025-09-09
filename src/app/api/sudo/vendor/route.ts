@@ -1,10 +1,11 @@
-// /src/app/api/sudo/vendor/route.ts
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { cookies } from "next/headers";
 import jwt from "jsonwebtoken";
 import fs from "fs";
 import path from "path";
+// ⬇️ bcrypt (native)
+import bcrypt from "bcrypt";
 
 export const runtime = "nodejs";
 const prisma = new PrismaClient();
@@ -43,23 +44,34 @@ async function ensureDir(dir: string) {
   await fs.promises.mkdir(dir, { recursive: true }).catch(() => {});
 }
 
+// ⬇️ SAFE file saver (name/type may be missing)
 async function saveFileToPublicUploads(file: File, outDir: string, fileNameBase: string) {
-  if (!file || file.size === 0) return null;
-  const extGuess =
-    (file.type && file.type.split("/").pop()) ||
-    (file.name.includes(".") ? file.name.split(".").pop() : "bin");
+  // validate file object
+  const size = (file as any)?.size ?? 0;
+  if (!file || size === 0) return null;
+
+  const rawType = (file as any)?.type || "";
+  const rawName = (file as any)?.name || "";
+
+  const byType = rawType && String(rawType).includes("/") ? String(rawType).split("/").pop() : "";
+  const byName = rawName && String(rawName).includes(".") ? String(rawName).split(".").pop() : "";
+  const extGuess = (byType || byName || "bin").toLowerCase();
+
   const outName = `${fileNameBase}.${extGuess}`;
   const outPath = path.join(process.cwd(), "public", outDir, outName);
   await ensureDir(path.dirname(outPath));
   const buf = Buffer.from(await file.arrayBuffer());
   await fs.promises.writeFile(outPath, buf);
-  // return public URL path
   return `/${path.posix.join(outDir, outName)}`;
 }
 
-/* -------------- GET --------------
-   - List (with q, page/pageSize) OR single by id
------------------------------------*/
+function who(me: any) {
+  const role = me?.role === "customer" ? "self" : me?.role || "admin";
+  const name = me?.name || me?.username || "";
+  return `${role}:${name}`;
+}
+
+/* -------------- GET -------------- */
 export async function GET(req: Request) {
   const me = await getMe();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -100,6 +112,8 @@ export async function GET(req: Request) {
       take: pageSize,
       select: {
         id: true,
+        firstName: true,
+        lastName: true,
         vendorName: true,
         username: true,
         phone: true,
@@ -125,11 +139,7 @@ export async function GET(req: Request) {
   return NextResponse.json({ rows, total, page, pageSize });
 }
 
-/* -------------- POST (Create) --------------
-   - multipart/form-data (files optional)
-   - permission: vendor:create
-   - uploads -> /public/uploads/vendor/{id}/
---------------------------------------------*/
+/* -------------- POST (Create) -------------- */
 export async function POST(req: Request) {
   const me = await getMe();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -140,14 +150,15 @@ export async function POST(req: Request) {
   try {
     const form = await req.formData();
 
-    // Step fields
     const firstName = (form.get("firstName") || "").toString().trim();
     const lastName = (form.get("lastName") || "").toString().trim();
-    const vendorName = (form.get("vendorName") || `${firstName} ${lastName}`.trim()).toString();
-    const username = (form.get("username") || "").toString();
-    const email = (form.get("email") || "").toString();
-    const phone = (form.get("phone") || "").toString();
-    const password = (form.get("password") || "").toString();
+    const vendorNameRaw = (form.get("vendorName") || "").toString().trim();
+    const vendorName = vendorNameRaw || `${firstName} ${lastName}`.trim();
+
+    const username = (form.get("username") || "").toString().trim();
+    const email = (form.get("email") || "").toString().trim();
+    const phone = (form.get("phone") || "").toString().trim();
+    const passwordRaw = (form.get("password") || "").toString();
 
     const address = (form.get("address") || "").toString();
     const city = (form.get("city") || "").toString();
@@ -169,13 +180,20 @@ export async function POST(req: Request) {
     const panNumber = (form.get("panNumber") || "").toString();
 
     const message = (form.get("message") || "").toString();
-    const registeredBy = (form.get("registeredBy") || "admin").toString();
-    const kycStatus = (form.get("kycStatus") || "pending").toString();
-    const kycBy = (form.get("kycBy") || "").toString();
 
-    // Create vendor first (without file paths)
+    if (!username || !email || !phone || !passwordRaw || !panNumber || !vendorName) {
+      return NextResponse.json({ error: "Required fields missing" }, { status: 400 });
+    }
+
+    // ⬇️ bcrypt (native)
+    const password = await bcrypt.hash(passwordRaw, 10);
+
+    const registeredBy = who(me);
+
     const created = await prisma.vendor.create({
       data: {
+        firstName: firstName || null,
+        lastName: lastName || null,
         username,
         vendorName,
         phone,
@@ -187,7 +205,6 @@ export async function POST(req: Request) {
         pinCode,
         vendorType,
         companyName,
-
         accountType,
         bankAccountNo,
         bankName,
@@ -195,28 +212,26 @@ export async function POST(req: Request) {
         accountHolder,
         upi: upi || null,
         paymentTerms,
-
         gstNumber: gstNumber || null,
         panNumber,
-
         message: message || null,
         registeredBy,
-        kycBy: kycBy || null,
-        kycStatus: kycStatus || "pending",
+        kycBy: null,
+        kycStatus: "pending",
       },
     });
 
-    // Save files (if provided)
+    // Files (optional)
     const baseDir = path.posix.join("uploads", "vendor", created.id);
     const panImageFile = form.get("panImage") as File | null;
     const gstImageFile = form.get("gstImage") as File | null;
     const aadharFile = form.get("aadharCard") as File | null;
     const chequeFile = form.get("cancelCheque") as File | null;
 
-    const panImage = panImageFile ? await saveFileToPublicUploads(panImageFile, baseDir, "pan") : null;
-    const gstImage = gstImageFile ? await saveFileToPublicUploads(gstImageFile, baseDir, "gst") : null;
-    const aadharCard = aadharFile ? await saveFileToPublicUploads(aadharFile, baseDir, "aadhar") : null;
-    const cancelCheque = chequeFile ? await saveFileToPublicUploads(chequeFile, baseDir, "cheque") : null;
+    const panImage = await saveFileToPublicUploads(panImageFile as any, baseDir, "pan");
+    const gstImage = await saveFileToPublicUploads(gstImageFile as any, baseDir, "gst");
+    const aadharCard = await saveFileToPublicUploads(aadharFile as any, baseDir, "aadhar");
+    const cancelCheque = await saveFileToPublicUploads(chequeFile as any, baseDir, "cheque");
 
     if (panImage || gstImage || aadharCard || cancelCheque) {
       await prisma.vendor.update({
@@ -227,9 +242,8 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ success: true, id: created.id });
   } catch (e: any) {
-    // Unique constraint handling
     const msg = String(e?.message || "");
-    if (msg.includes("Unique") || msg.includes("unique")) {
+    if (msg.toLowerCase().includes("unique")) {
       return NextResponse.json({ error: "Username/Email/PAN already exists" }, { status: 400 });
     }
     console.error("VENDOR_CREATE_ERROR", e);
@@ -237,11 +251,7 @@ export async function POST(req: Request) {
   }
 }
 
-/* -------------- PUT (Update) --------------
-   - multipart/form-data OR JSON
-   - permission: vendor:edit
-   - KYC updates set kycBy = me.username (if provided)
---------------------------------------------*/
+/* -------------- PUT (Update) -------------- */
 export async function PUT(req: Request) {
   const me = await getMe();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -267,11 +277,13 @@ export async function PUT(req: Request) {
       };
 
       data = {
+        firstName: take("firstName"),
+        lastName: take("lastName"),
         username: take("username"),
         vendorName: take("vendorName"),
         phone: take("phone"),
         email: take("email"),
-        password: take("password"),
+        password: take("password"), // may be empty – handle below
         address: take("address"),
         city: take("city"),
         state: take("state"),
@@ -292,7 +304,6 @@ export async function PUT(req: Request) {
         kycStatus: take("kycStatus"),
       };
 
-      // files
       files = {
         panImage: (form.get("panImage") as File) || null,
         gstImage: (form.get("gstImage") as File) || null,
@@ -307,32 +318,53 @@ export async function PUT(req: Request) {
       delete data.id;
     }
 
-   // if kycStatus provided, tag who did it with role:name (or self:name)
-if (typeof data.kycStatus === "string" && data.kycStatus.length > 0) {
-  const whoRole = me.role === "customer" ? "self" : me.role || "admin";
-  const whoName = me.name || me.username || "";
-  data.kycBy = `${whoRole}:${whoName}`;
-}
+    // kyc tagging
+    if (typeof data.kycStatus === "string" && data.kycStatus.length > 0) {
+      data.kycBy = who(me);
+    }
+
+    // password handling (bcrypt native)
+    if (data.password !== undefined) {
+      if (typeof data.password !== "string" || data.password.trim() === "") {
+        delete data.password; // ignore blank
+      } else {
+        data.password = await bcrypt.hash(data.password, 10);
+      }
+    }
+
+    // auto vendorName
+    if ((!data.vendorName || !data.vendorName.trim()) && (data.firstName || data.lastName)) {
+      data.vendorName = `${data.firstName || ""} ${data.lastName || ""}`.trim();
+    }
+
     // prune undefined
     Object.keys(data).forEach((k) => data[k] === undefined && delete data[k]);
 
     const old = await prisma.vendor.findUnique({ where: { id } });
     if (!old) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-    // Save files if present
+    // Files — only if real files with size > 0
     if (contentType.includes("multipart/form-data")) {
       const baseDir = path.posix.join("uploads", "vendor", id);
-      if (files.panImage) data.panImage = await saveFileToPublicUploads(files.panImage, baseDir, "pan");
-      if (files.gstImage) data.gstImage = await saveFileToPublicUploads(files.gstImage, baseDir, "gst");
-      if (files.aadharCard) data.aadharCard = await saveFileToPublicUploads(files.aadharCard, baseDir, "aadhar");
-      if (files.cancelCheque) data.cancelCheque = await saveFileToPublicUploads(files.cancelCheque, baseDir, "cheque");
+      const writeIfAny = async (f: File | null, base: string) =>
+        f && (f as any).size > 0 ? await saveFileToPublicUploads(f, baseDir, base) : null;
+
+      const panImage = await writeIfAny(files.panImage, "pan");
+      const gstImage = await writeIfAny(files.gstImage, "gst");
+      const aadharCard = await writeIfAny(files.aadharCard, "aadhar");
+      const cancelCheque = await writeIfAny(files.cancelCheque, "cheque");
+
+      if (panImage) data.panImage = panImage;
+      if (gstImage) data.gstImage = gstImage;
+      if (aadharCard) data.aadharCard = aadharCard;
+      if (cancelCheque) data.cancelCheque = cancelCheque;
     }
 
     const updated = await prisma.vendor.update({ where: { id }, data });
     return NextResponse.json(updated);
   } catch (e: any) {
     const msg = String(e?.message || "");
-    if (msg.includes("Unique") || msg.includes("unique")) {
+    if (msg.toLowerCase().includes("unique")) {
       return NextResponse.json({ error: "Username/Email/PAN already exists" }, { status: 400 });
     }
     console.error("VENDOR_UPDATE_ERROR", e);
@@ -340,11 +372,7 @@ if (typeof data.kycStatus === "string" && data.kycStatus.length > 0) {
   }
 }
 
-/* -------------- DELETE (Soft) --------------
-   - JSON: { ids: string[] }
-   - permission: vendor:delete
-   - set active=false
---------------------------------------------*/
+/* -------------- DELETE (Soft) -------------- */
 export async function DELETE(req: Request) {
   const me = await getMe();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

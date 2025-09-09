@@ -1,4 +1,3 @@
-// src/layout/admin/SidebarAdmin.tsx
 "use client";
 
 import React, { useCallback } from "react";
@@ -7,8 +6,6 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useSidebar } from "@/context/SidebarContext";
 import SidebarWidget from "@/layout/SidebarWidget";
-
-// ✅ Icons exactly same family/size style as Sudo sidebar
 import {
   LayoutDashboard,
   Truck,
@@ -27,8 +24,6 @@ type NavItem = {
   path: string;
 };
 
-// ✅ Admin sidebar: SAME order as sudo BUT **without** “Admin” item
-// Final: Dashboard → Loads → Vendor → Customer → Call → Support → Wallet → Notification
 const navItems: NavItem[] = [
   { icon: <LayoutDashboard size={20} />, name: "Dashboard",    path: "/admin" },
   { icon: <Truck size={20} />,           name: "Loads",        path: "/admin/loads" },
@@ -44,14 +39,19 @@ const SidebarAdmin: React.FC = () => {
   const { isExpanded, isMobileOpen, isHovered, setIsHovered } = useSidebar();
   const pathname = usePathname();
 
+  // ✅ exact-match for "/admin"; prefix for others
   const isActive = useCallback(
-    (path: string) => !!pathname && (pathname === path || pathname.startsWith(path + "/")),
+    (path: string) => {
+      if (!pathname) return false;
+      if (path === "/admin") return pathname === "/admin";               // only exact dashboard
+      return pathname === path || pathname.startsWith(path + "/");       // sub-pages
+    },
     [pathname]
   );
 
   return (
     <aside
-      className={`fixed mt-16 lg:mt-0 top-0 left-0 h-screen px-5 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border-r border-gray-200 dark:border-gray-800 transition-all duration-300 ease-in-out z-50
+      className={`fixed mt-16 lg:mt-0 top-0 left-0 h-screen px-5 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border-r border-gray-200 dark:border-gray-800 transition-all duration-300 ease-in-out z-[9980]
         ${isExpanded || isMobileOpen ? "w-[290px]" : isHovered ? "w-[290px]" : "w-[90px]"}
         ${isMobileOpen ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0`}
       onMouseEnter={() => !isExpanded && setIsHovered(true)}

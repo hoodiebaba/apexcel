@@ -1,13 +1,15 @@
 // src/components/header/UserDropdownAdmin.tsx
 "use client";
 import Image from "next/image";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Dropdown } from "../ui/dropdown/Dropdown";
 import { DropdownItem } from "../ui/dropdown/DropdownItem";
 
+type AdminMini = { name: string; email: string; photo: string };
+
 export default function UserDropdownAdmin() {
   const [isOpen, setIsOpen] = useState(false);
-  const [user, setUser] = useState({
+  const [user, setUser] = useState<AdminMini>({
     name: "Admin User",
     email: "admin@apexcel.com",
     photo: "/user.png",
@@ -19,40 +21,53 @@ export default function UserDropdownAdmin() {
   };
   const closeDropdown = () => setIsOpen(false);
 
-  // ✅ Admin profile via httpOnly cookie
-  useEffect(() => {
-    let abort = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/admin/me", {
-          credentials: "include",
-          cache: "no-store",
+  const pickPhoto = (p?: string | null) =>
+    p && p.trim() !== "" && p !== "null" ? p : "/user.png";
+
+  const refetchMe = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const res = await fetch("/api/admin/me", {
+        credentials: "include",
+        cache: "no-store",
+        signal,
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data?.user) {
+        setUser({
+          name: data.user.name || "Admin User",
+          email: data.user.email || "admin@apexcel.com",
+          photo: pickPhoto(data.user.photo),
         });
-        if (!res.ok) return; // not logged in
-        const data = await res.json();
-        if (abort) return;
-        if (data?.user) {
-          setUser({
-            name: data.user.name || "Admin User",
-            email: data.user.email || "admin@apexcel.com",
-            photo:
-              data.user.photo &&
-              String(data.user.photo).trim() !== "" &&
-              data.user.photo !== "null"
-                ? data.user.photo
-                : "/user.png",
-          });
-        }
-      } catch {
-        // ignore
       }
-    })();
-    return () => {
-      abort = true;
-    };
+    } catch {
+      /* ignore */
+    }
   }, []);
 
-  // ✅ Proper logout: server cookie clear + hard redirect
+  // initial + visibility/focus + custom event
+  useEffect(() => {
+    const controller = new AbortController();
+    refetchMe(controller.signal);
+
+    const onFocus = () => refetchMe();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") refetchMe();
+    };
+    const onProfileUpdated = () => refetchMe();
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("admin:profile-updated", onProfileUpdated as EventListener);
+
+    return () => {
+      controller.abort();
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("admin:profile-updated", onProfileUpdated as EventListener);
+    };
+  }, [refetchMe]);
+
   const handleLogout = async () => {
     try {
       await fetch("/api/admin/logout", {
@@ -61,9 +76,8 @@ export default function UserDropdownAdmin() {
         cache: "no-store",
       });
     } catch {
-      // ignore
+      /* ignore */
     } finally {
-      // hard reload to bust any client caches
       window.location.assign("/");
     }
   };
@@ -89,18 +103,12 @@ export default function UserDropdownAdmin() {
           className={`stroke-gray-500 dark:stroke-gray-400 transition-transform duration-200 ${
             isOpen ? "rotate-180" : ""
           }`}
-          width="18"
-          height="20"
-          viewBox="0 0 18 20"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
+          width="18" height="20" viewBox="0 0 18 20" fill="none"
         >
           <path
             d="M4.3125 8.65625L9 13.3437L13.6875 8.65625"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+            stroke="currentColor" strokeWidth="1.5"
+            strokeLinecap="round" strokeLinejoin="round"
           />
         </svg>
       </button>
@@ -110,7 +118,6 @@ export default function UserDropdownAdmin() {
         onClose={closeDropdown}
         className="absolute right-0 mt-[17px] flex w-[220px] flex-col rounded-2xl border border-gray-200 bg-white p-3 shadow-theme-lg dark:border-gray-800 dark:bg-gray-dark"
       >
-        {/* User info */}
         <div>
           <span className="block font-medium text-gray-700 text-theme-sm dark:text-gray-400">
             {user.name}
@@ -120,7 +127,6 @@ export default function UserDropdownAdmin() {
           </span>
         </div>
 
-        {/* Actions */}
         <ul className="flex flex-col gap-1 pt-4 pb-3 border-b border-gray-200 dark:border-gray-800">
           <li>
             <DropdownItem
@@ -134,13 +140,9 @@ export default function UserDropdownAdmin() {
           </li>
           <li>
             <DropdownItem
-              onItemClick={() => {
-                window.open(
-                  "https://www.kalpitevolution.com/contact",
-                  "_blank",
-                  "noopener,noreferrer"
-                );
-              }}
+              onItemClick={() =>
+                window.open("https://www.kalpitevolution.com/contact", "_blank", "noopener,noreferrer")
+              }
               tag="a"
               href="#"
               className="flex items-center gap-3 px-3 py-2 font-medium text-gray-700 rounded-lg group text-theme-sm hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-gray-300"
@@ -150,7 +152,6 @@ export default function UserDropdownAdmin() {
           </li>
         </ul>
 
-        {/* Sign out */}
         <button
           onClick={handleLogout}
           className="flex items-center gap-3 px-3 py-2 mt-3 font-medium text-gray-700 rounded-lg group text-theme-sm hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-gray-300"

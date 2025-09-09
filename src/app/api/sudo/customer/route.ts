@@ -1,9 +1,11 @@
+// FILE: app/api/sudo/customer/route.ts
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { cookies } from "next/headers";
 import jwt from "jsonwebtoken";
 import fs from "fs";
 import path from "path";
+import bcrypt from "bcrypt";
 
 export const runtime = "nodejs";
 const prisma = new PrismaClient();
@@ -27,32 +29,38 @@ async function getMe() {
       address: admin.address ?? "",
       permissions: admin.permissions ?? [],
     };
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
-
 function hasPerm(me: any, perm: string) {
   if (!me) return false;
   if (me.role === "sudo") return true;
   return (me.permissions || []).includes(perm);
 }
-
 async function ensureDir(dir: string) {
   await fs.promises.mkdir(dir, { recursive: true }).catch(() => {});
 }
+// safe file saver (name/type optional) + only when size>0
+async function saveFileToPublicUploads(file: File | null, outDir: string, fileNameBase: string) {
+  const size = (file as any)?.size ?? 0;
+  if (!file || size === 0) return null;
 
-async function saveFileToPublicUploads(file: File, outDir: string, fileNameBase: string) {
-  if (!file || file.size === 0) return null;
-  const extGuess =
-    (file.type && file.type.split("/").pop()) ||
-    (file.name.includes(".") ? file.name.split(".").pop() : "bin");
+  const rawType = (file as any)?.type || "";
+  const rawName = (file as any)?.name || "";
+  const byType = rawType && String(rawType).includes("/") ? String(rawType).split("/").pop() : "";
+  const byName = rawName && String(rawName).includes(".") ? String(rawName).split(".").pop() : "";
+  const extGuess = (byType || byName || "bin").toLowerCase();
+
   const outName = `${fileNameBase}.${extGuess}`;
   const outPath = path.join(process.cwd(), "public", outDir, outName);
   await ensureDir(path.dirname(outPath));
   const buf = Buffer.from(await file.arrayBuffer());
   await fs.promises.writeFile(outPath, buf);
-  return `/${path.posix.join(outDir, outName)}`; // public URL
+  return `/${path.posix.join(outDir, outName)}`;
+}
+function who(me: any) {
+  const role = me?.role === "customer" ? "self" : me?.role || "admin";
+  const name = me?.name || me?.username || "";
+  return `${role}:${name}`;
 }
 
 /* -------------- GET -------------- */
@@ -96,6 +104,8 @@ export async function GET(req: Request) {
       take: pageSize,
       select: {
         id: true,
+        firstName: true,          // <— include for table/use
+        lastName: true,           // <— include for table/use
         customerName: true,
         username: true,
         phone: true,
@@ -132,43 +142,50 @@ export async function POST(req: Request) {
   try {
     const form = await req.formData();
 
-    // Steps
     const firstName = (form.get("firstName") || "").toString().trim();
-    const lastName = (form.get("lastName") || "").toString().trim();
-    const customerName = (form.get("customerName") || `${firstName} ${lastName}`.trim()).toString();
-    const username = (form.get("username") || "").toString();
-    const email = (form.get("email") || "").toString();
-    const phone = (form.get("phone") || "").toString();
-    const password = (form.get("password") || "").toString();
+    const lastName  = (form.get("lastName")  || "").toString().trim();
+    const customerNameRaw = (form.get("customerName") || "").toString().trim();
+    const customerName = customerNameRaw || `${firstName} ${lastName}`.trim();
 
-    const address = (form.get("address") || "").toString();
-    const city = (form.get("city") || "").toString();
-    const state = (form.get("state") || "").toString();
-    const pinCode = (form.get("pinCode") || "").toString();
+    const username = (form.get("username") || "").toString().trim();
+    const email    = (form.get("email")    || "").toString().trim();
+    const phone    = (form.get("phone")    || "").toString().trim();
+    const passwordRaw = (form.get("password") || "").toString();
 
-    const customerType = (form.get("customerType") || "").toString(); // individual/govt/company
-    const freightTerms = (form.get("freightTerms") || "").toString(); // Paid/ToPay/TBB/Transporter
-    const companyName = (form.get("companyName") || "").toString();
+    const address  = (form.get("address")  || "").toString();
+    const city     = (form.get("city")     || "").toString();
+    const state    = (form.get("state")    || "").toString();
+    const pinCode  = (form.get("pinCode")  || "").toString();
 
-    const accountType = (form.get("accountType") || "").toString(); // Savings/Current
+    const customerType = (form.get("customerType") || "").toString();
+    const freightTerms = (form.get("freightTerms") || "").toString();
+    const companyName  = (form.get("companyName")  || "").toString();
+
+    const accountType   = (form.get("accountType")   || "").toString();
     const bankAccountNo = (form.get("bankAccountNo") || "").toString();
-    const bankName = (form.get("bankName") || "").toString();
-    const ifsc = (form.get("ifsc") || "").toString();
+    const bankName      = (form.get("bankName")      || "").toString();
+    const ifsc          = (form.get("ifsc")          || "").toString();
     const accountHolder = (form.get("accountHolder") || "").toString();
-    const upi = (form.get("upi") || "").toString();
-    const paymentTerms = (form.get("paymentTerms") || "").toString();
+    const upi           = (form.get("upi")           || "").toString();
+    const paymentTerms  = (form.get("paymentTerms")  || "").toString();
 
     const gstNumber = (form.get("gstNumber") || "").toString();
-    const panNumber = (form.get("panNumber") || "").toString();
+    const panNumber = (form.get("panNumber") || "").toString(); // optional in schema
 
     const message = (form.get("message") || "").toString();
-    const registeredBy = (form.get("registeredBy") || "admin").toString();
-    const kycStatus = (form.get("kycStatus") || "pending").toString();
-    const kycBy = (form.get("kycBy") || "").toString();
 
-    // Create customer (without file paths)
+    // ✅ basic validations
+    if (!username || !email || !phone || !passwordRaw || !customerName) {
+      return NextResponse.json({ error: "Required fields missing" }, { status: 400 });
+    }
+
+    const password = await bcrypt.hash(passwordRaw, 10);
+    const registeredBy = who(me);
+
     const created = await prisma.customer.create({
       data: {
+        firstName: firstName || null,   // <— save in DB
+        lastName:  lastName  || null,   // <— save in DB
         username,
         customerName,
         phone,
@@ -196,22 +213,17 @@ export async function POST(req: Request) {
 
         message: message || null,
         registeredBy,
-        kycBy: kycBy || null,
-        kycStatus: kycStatus || "pending",
+        kycBy: null,
+        kycStatus: "pending",
       },
     });
 
     // Files
     const baseDir = path.posix.join("uploads", "customer", created.id);
-    const panImageFile = form.get("panImage") as File | null;
-    const gstImageFile = form.get("gstImage") as File | null;
-    const aadharFile = form.get("aadharCard") as File | null;
-    const chequeFile = form.get("cancelCheque") as File | null;
-
-    const panImage = panImageFile ? await saveFileToPublicUploads(panImageFile, baseDir, "pan") : null;
-    const gstImage = gstImageFile ? await saveFileToPublicUploads(gstImageFile, baseDir, "gst") : null;
-    const aadharCard = aadharFile ? await saveFileToPublicUploads(aadharFile, baseDir, "aadhar") : null;
-    const cancelCheque = chequeFile ? await saveFileToPublicUploads(chequeFile, baseDir, "cheque") : null;
+    const panImage    = await saveFileToPublicUploads(form.get("panImage") as File,     baseDir, "pan");
+    const gstImage    = await saveFileToPublicUploads(form.get("gstImage") as File,     baseDir, "gst");
+    const aadharCard  = await saveFileToPublicUploads(form.get("aadharCard") as File,   baseDir, "aadhar");
+    const cancelCheque= await saveFileToPublicUploads(form.get("cancelCheque") as File, baseDir, "cheque");
 
     if (panImage || gstImage || aadharCard || cancelCheque) {
       await prisma.customer.update({
@@ -223,7 +235,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: true, id: created.id });
   } catch (e: any) {
     const msg = String(e?.message || "");
-    if (msg.includes("Unique") || msg.includes("unique")) {
+    if (msg.toLowerCase().includes("unique")) {
       return NextResponse.json({ error: "Username/Email/PAN already exists" }, { status: 400 });
     }
     console.error("CUSTOMER_CREATE_ERROR", e);
@@ -257,6 +269,8 @@ export async function PUT(req: Request) {
       };
 
       data = {
+        firstName: take("firstName"),     // <— handle on update
+        lastName:  take("lastName"),      // <— handle on update
         username: take("username"),
         customerName: take("customerName"),
         phone: take("phone"),
@@ -297,31 +311,53 @@ export async function PUT(req: Request) {
       delete data.id;
     }
 
-    // if kycStatus provided, tag who did it with role:name (or self:name)
+    // if kycStatus updated → tag who did it
     if (typeof data.kycStatus === "string" && data.kycStatus.length > 0) {
-      const whoRole = me.role === "customer" ? "self" : me.role || "admin";
-      const whoName = me.name || me.username || "";
-      data.kycBy = `${whoRole}:${whoName}`;
+      data.kycBy = who(me);
     }
 
+    // password: ignore blank; else hash
+    if (data.password !== undefined) {
+      if (typeof data.password !== "string" || data.password.trim() === "") {
+        delete data.password;
+      } else {
+        data.password = await bcrypt.hash(data.password, 10);
+      }
+    }
+
+    // auto-customerName from first/last if provided & empty
+    if ((!data.customerName || !data.customerName.trim()) && (data.firstName || data.lastName)) {
+      data.customerName = `${data.firstName || ""} ${data.lastName || ""}`.trim();
+    }
+
+    // prune undefined
     Object.keys(data).forEach((k) => data[k] === undefined && delete data[k]);
 
     const old = await prisma.customer.findUnique({ where: { id } });
     if (!old) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+    // Files (only real ones)
     if (contentType.includes("multipart/form-data")) {
       const baseDir = path.posix.join("uploads", "customer", id);
-      if (files.panImage) data.panImage = await saveFileToPublicUploads(files.panImage, baseDir, "pan");
-      if (files.gstImage) data.gstImage = await saveFileToPublicUploads(files.gstImage, baseDir, "gst");
-      if (files.aadharCard) data.aadharCard = await saveFileToPublicUploads(files.aadharCard, baseDir, "aadhar");
-      if (files.cancelCheque) data.cancelCheque = await saveFileToPublicUploads(files.cancelCheque, baseDir, "cheque");
+      const writeIfAny = async (f: File | null, base: string) =>
+        f && (f as any).size > 0 ? await saveFileToPublicUploads(f, baseDir, base) : null;
+
+      const panImage    = await writeIfAny(files.panImage, "pan");
+      const gstImage    = await writeIfAny(files.gstImage, "gst");
+      const aadharCard  = await writeIfAny(files.aadharCard, "aadhar");
+      const cancelCheque= await writeIfAny(files.cancelCheque, "cheque");
+
+      if (panImage) data.panImage = panImage;
+      if (gstImage) data.gstImage = gstImage;
+      if (aadharCard) data.aadharCard = aadharCard;
+      if (cancelCheque) data.cancelCheque = cancelCheque;
     }
 
     const updated = await prisma.customer.update({ where: { id }, data });
     return NextResponse.json(updated);
   } catch (e: any) {
     const msg = String(e?.message || "");
-    if (msg.includes("Unique") || msg.includes("unique")) {
+    if (msg.toLowerCase().includes("unique")) {
       return NextResponse.json({ error: "Username/Email/PAN already exists" }, { status: 400 });
     }
     console.error("CUSTOMER_UPDATE_ERROR", e);
