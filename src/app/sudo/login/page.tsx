@@ -1,11 +1,33 @@
+// src/app/sudo/login/page.tsx
 "use client";
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
+function getOrCreateDeviceId() {
+  try {
+    const k = "__dev_id__";
+    let id = localStorage.getItem(k);
+    if (!id) {
+      id = crypto.randomUUID?.() || Math.random().toString(36).slice(2) + Date.now();
+      localStorage.setItem(k, id);
+    }
+    return id;
+  } catch {
+    // SSR / restricted env fallback
+    return Math.random().toString(36).slice(2) + Date.now();
+  }
+}
+
 export default function SudoLoginPage() {
   const [error, setError] = useState("");
   const router = useRouter();
+  const [deviceId, setDeviceId] = useState<string>("");
+
+  // device id ready
+  useEffect(() => {
+    setDeviceId(getOrCreateDeviceId());
+  }, []);
 
   // ✅ already logged-in sudo ko bounce karo
   useEffect(() => {
@@ -13,15 +35,13 @@ export default function SudoLoginPage() {
       try {
         const res = await fetch("/api/sudo/me", {
           credentials: "include",
-          cache: "no-store", // 🚀 important
+          cache: "no-store",
         });
         const data = await res.json();
         if (res.ok && data.loggedIn && data.user?.role === "sudo") {
           router.replace("/sudo");
         }
-      } catch {
-        // ignore errors, stay on login
-      }
+      } catch {}
     };
     checkAuth();
   }, [router]);
@@ -39,16 +59,19 @@ export default function SudoLoginPage() {
     try {
       const res = await fetch("/api/sudo/login", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-device-id": deviceId || "", // ✅ device header
+        },
         body: JSON.stringify(payload),
         credentials: "include",
-        cache: "no-store", // 🚀 avoid stale login state
+        cache: "no-store",
       });
 
       const data = await res.json();
 
       if (res.ok) {
-        router.replace("/sudo"); // ✅ dashboard
+        router.replace("/sudo");
       } else {
         setError(data.message || "Login failed");
       }
@@ -79,7 +102,7 @@ export default function SudoLoginPage() {
           type="password"
           name="password"
           placeholder="Password"
-          className="border w-full p-2 mb-4 rounded"
+          className="border w-full p-2 mb-6 rounded"
           required
         />
 
@@ -89,6 +112,11 @@ export default function SudoLoginPage() {
         >
           Login
         </button>
+
+        {/* chhota hint: device lock */}
+        <p className="text-xs text-gray-500 mt-3">
+          Note: Sudo login ek hi device par allowed hai.
+        </p>
       </form>
     </div>
   );

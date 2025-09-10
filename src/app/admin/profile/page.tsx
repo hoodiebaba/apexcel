@@ -1,4 +1,3 @@
-// src/app/admin/profile/page.tsx
 "use client";
 
 import React, { useEffect, useState, useRef } from "react";
@@ -23,7 +22,7 @@ type FormState = {
   ifsc?: string;
   upi?: string;
   gstNumber?: string;
-  password?: string; // blank by default
+  password?: string;
 };
 
 const InputField = ({
@@ -52,7 +51,7 @@ const InputField = ({
 );
 
 const bust = (url?: string | null) => {
-  const u = (url && url.trim() !== "" && url !== "null") ? url : "/user.png";
+  const u = url && url.trim() !== "" && url !== "null" ? url : "/user.png";
   const [pathOnly] = u.split("?");
   return `${pathOnly}?v=${Date.now()}`;
 };
@@ -68,15 +67,21 @@ export default function AdminProfilePage() {
   const objectUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
-    const ac = new AbortController();
+    let alive = true; // 👈 unmount guard (no AbortController, so no cancel)
 
     (async () => {
       try {
         const res = await fetch("/api/admin/profile", {
           credentials: "include",
           cache: "no-store",
-          signal: ac.signal,
+          // signal removed → request won't be canceled, no red in Network
+          headers: {
+            // change dedupe key in dev; optional, harmless
+            "x-dev-nodedupe": Date.now().toString(),
+          },
         });
+
+        if (!alive) return;
 
         if (res.status === 401) {
           router.replace("/admin/login");
@@ -94,17 +99,16 @@ export default function AdminProfilePage() {
         );
 
         setFormData({ ...cleanUser, password: "" });
-        setPhoto(bust(cleanUser.photo)); // 🔥 cache-bust on first load
+        setPhoto(bust(cleanUser.photo));
       } catch (e) {
-        if (!ac.signal.aborted) console.error(e);
+        if (alive) console.error(e);
       } finally {
-        if (!ac.signal.aborted) setLoading(false);
+        if (alive) setLoading(false);
       }
     })();
 
     return () => {
-      ac.abort();
-      // clean any temp objectURL
+      alive = false; // 👈 stop setState after unmount (no cancel)
       if (objectUrlRef.current) {
         URL.revokeObjectURL(objectUrlRef.current);
         objectUrlRef.current = null;
@@ -120,7 +124,6 @@ export default function AdminProfilePage() {
     const f = e.target.files?.[0];
     if (f) {
       setFile(f);
-      // revoke previous preview URL if any
       if (objectUrlRef.current) {
         URL.revokeObjectURL(objectUrlRef.current);
         objectUrlRef.current = null;
@@ -131,7 +134,6 @@ export default function AdminProfilePage() {
     }
   };
 
-  // Remove disallowed/blank fields
   const sanitizeData = (data: Record<string, any>) => {
     const cleaned: Record<string, any> = {};
     for (const [k, v] of Object.entries(data)) {
@@ -190,14 +192,11 @@ export default function AdminProfilePage() {
           Object.entries(data.user).map(([k, v]) => [k, v === "null" ? "" : v])
         ) as Record<string, any>;
 
-        // fresh form + busted photo from server
         setFormData({ ...cleanUser, password: "" });
-        setPhoto(bust(cleanUser.photo)); // 🔥 force refresh
+        setPhoto(bust(cleanUser.photo));
 
-        // header ko notify so dropdown refetches
         window.dispatchEvent(new CustomEvent("admin:profile-updated"));
 
-        // reset local file + preview
         setFile(null);
         if (objectUrlRef.current) {
           URL.revokeObjectURL(objectUrlRef.current);

@@ -1,3 +1,4 @@
+// src/app/api/admin/vendor/route.ts
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { cookies } from "next/headers";
@@ -8,6 +9,15 @@ import bcrypt from "bcrypt";
 
 export const runtime = "nodejs";
 
+/* ---------------- Utils ---------------- */
+function toArrayPerms(perms: any): string[] {
+  if (Array.isArray(perms)) return perms;
+  if (!perms) return [];
+  return String(perms).split(",").map(s => s.trim()).filter(Boolean);
+}
+const hasCI = (list: string[] | undefined, perm: string) =>
+  (list || []).some(p => String(p).toLowerCase() === perm.toLowerCase());
+
 /* ---------------- Helpers ---------------- */
 async function getMe() {
   const jar = await cookies();
@@ -15,65 +25,68 @@ async function getMe() {
   if (!token) return null;
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || "apex-secret") as any;
-    const admin = await prisma.admin.findUnique({
-      where: { id: decoded.id },
-      select: {
-        id: true,
-        role: true,
-        name: true,
-        username: true,
-        email: true,
-        phone: true,
-        status: true,
-        permissions: true,
-      },
-    });
-    if (!admin) return null;
-    return admin;
+    const admin = await prisma.admin.findUnique({ where: { id: decoded.id } });
+    // ✅ ADMIN + ACTIVE only
+    if (!admin || admin.status !== "active" || admin.role !== "admin") return null;
+    return {
+      id: admin.id,
+      role: admin.role,
+      name: admin.name ?? "",
+      username: admin.username ?? "",
+      phone: admin.phone ?? "",
+      email: admin.email ?? "",
+      address: admin.address ?? "",
+      permissions: toArrayPerms(admin.permissions),
+      status: admin.status,
+    };
   } catch {
     return null;
   }
 }
 
-const hasPerm = (me: any, perm: string) =>
-  !!me && (me.role === "sudo" || (me.permissions || []).includes(perm));
-
-function who(me: any) {
-  const role = me?.role === "customer" ? "self" : me?.role || "admin";
-  const name = me?.name || me?.username || "";
-  return `${role}:${name}`.trim();
+function hasPerm(me: any, perm: string) {
+  if (!me) return false;
+  // admin ko sab allowed (aur perms bhi case-insensitive)
+  return me.role === "admin" || hasCI(me.permissions, perm);
 }
 
 async function ensureDir(dir: string) {
   await fs.promises.mkdir(dir, { recursive: true }).catch(() => {});
 }
 
-async function saveFile(file: File | null, baseDir: string, baseName: string) {
+// Safe file writer (extension best-effort)
+async function saveFileToPublicUploads(file: File, outDir: string, fileNameBase: string) {
   const size = (file as any)?.size ?? 0;
-  if (!file || size <= 0) return null;
+  if (!file || size === 0) return null;
 
   const rawType = (file as any)?.type || "";
   const rawName = (file as any)?.name || "";
 
-  const byType = rawType && rawType.includes("/") ? rawType.split("/").pop() : "";
-  const byName = rawName && rawName.includes(".") ? rawName.split(".").pop() : "";
-  const ext = (byType || byName || "bin").toLowerCase();
+  const byType = rawType && String(rawType).includes("/") ? String(rawType).split("/").pop() : "";
+  const byName = rawName && String(rawName).includes(".") ? String(rawName).split(".").pop() : "";
+  const extGuess = (byType || byName || "bin").toLowerCase();
 
-  const outRel = path.posix.join(baseDir, `${baseName}.${ext}`);
-  const outAbs = path.join(process.cwd(), "public", outRel);
-  await ensureDir(path.dirname(outAbs));
+  const outName = `${fileNameBase}.${extGuess}`;
+  const outPath = path.join(process.cwd(), "public", outDir, outName);
+  await ensureDir(path.dirname(outPath));
   const buf = Buffer.from(await file.arrayBuffer());
-  await fs.promises.writeFile(outAbs, buf);
-  return `/${outRel}`;
+  await fs.promises.writeFile(outPath, buf);
+  return `/${path.posix.join(outDir, outName)}`;
+}
+
+function who(me: any) {
+  const role = "admin";
+  const name = me?.name || me?.username || "";
+  return `${role}:${name}`;
 }
 
 /* ---------------- GET (list/single) ---------------- */
 export async function GET(req: Request) {
   const me = await getMe();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (me.status !== "active") return NextResponse.json({ error: "Inactive" }, { status: 403 });
-  if (!hasPerm(me, "Vendors:page_view") && !hasPerm(me, "Vendors:view"))
+  if (!hasPerm(me, "vendor:page_view") && !hasPerm(me, "vendor:view")) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id");
@@ -87,16 +100,16 @@ export async function GET(req: Request) {
     return NextResponse.json(row ?? null);
   }
 
-  const where: any = { active: true }; // admin sees all active vendors
+  const where: any = { active: true };
   if (q) {
     where.OR = [
       { vendorName: { contains: q, mode: "insensitive" } },
-      { username: { contains: q, mode: "insensitive" } },
-      { email: { contains: q, mode: "insensitive" } },
-      { phone: { contains: q, mode: "insensitive" } },
-      { companyName: { contains: q, mode: "insensitive" } },
-      { panNumber: { contains: q, mode: "insensitive" } },
-      { gstNumber: { contains: q, mode: "insensitive" } },
+      { username:   { contains: q, mode: "insensitive" } },
+      { email:      { contains: q, mode: "insensitive" } },
+      { phone:      { contains: q, mode: "insensitive" } },
+      { companyName:{ contains: q, mode: "insensitive" } },
+      { panNumber:  { contains: q, mode: "insensitive" } },
+      { gstNumber:  { contains: q, mode: "insensitive" } },
     ];
   }
 
@@ -107,26 +120,11 @@ export async function GET(req: Request) {
       skip,
       take: pageSize,
       select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        vendorName: true,
-        username: true,
-        phone: true,
-        email: true,
-        kycBy: true,
-        kycStatus: true,
-        panNumber: true,
-        createdAt: true,
-        updatedAt: true,
-        registeredBy: true,
-        active: true,
-        companyName: true,
-        address: true,
-        panImage: true,
-        gstImage: true,
-        aadharCard: true,
-        cancelCheque: true,
+        id: true, firstName: true, lastName: true, vendorName: true, username: true,
+        phone: true, email: true, kycBy: true, kycStatus: true, panNumber: true,
+        createdAt: true, updatedAt: true, registeredBy: true, active: true,
+        companyName: true, address: true, panImage: true, gstImage: true,
+        aadharCard: true, cancelCheque: true,
       },
     }),
     prisma.vendor.count({ where }),
@@ -139,61 +137,93 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const me = await getMe();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (me.status !== "active") return NextResponse.json({ error: "Inactive" }, { status: 403 });
-  if (!hasPerm(me, "Vendors:create")) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!hasPerm(me, "vendor:create")) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   try {
     const form = await req.formData();
-    const get = (k: string) => (form.get(k) || "").toString().trim();
 
-    const vendorName = get("vendorName") || `${get("firstName")} ${get("lastName")}`.trim();
-    const username = get("username");
-    const email = get("email");
-    const phone = get("phone");
-    const panNumber = get("panNumber");
-    const passwordRaw = get("password");
+    const firstName = (form.get("firstName") || "").toString().trim();
+    const lastName  = (form.get("lastName")  || "").toString().trim();
+    const vendorNameRaw = (form.get("vendorName") || "").toString().trim();
+    const vendorName = vendorNameRaw || `${firstName} ${lastName}`.trim();
 
-    if (!vendorName || !username || !email || !phone || !panNumber || !passwordRaw) {
+    const username  = (form.get("username") || "").toString().trim();
+    const email     = (form.get("email")    || "").toString().trim();
+    const phone     = (form.get("phone")    || "").toString().trim();
+    const passwordRaw = (form.get("password") || "").toString();
+
+    const address   = (form.get("address")  || "").toString();
+    const city      = (form.get("city")     || "").toString();
+    const state     = (form.get("state")    || "").toString();
+    const pinCode   = (form.get("pinCode")  || "").toString();
+
+    const vendorType   = (form.get("vendorType")   || "").toString();
+    const companyName  = (form.get("companyName")  || "").toString();
+
+    const accountType   = (form.get("accountType")   || "").toString();
+    const bankAccountNo = (form.get("bankAccountNo") || "").toString();
+    const bankName      = (form.get("bankName")      || "").toString();
+    const ifsc          = (form.get("ifsc")          || "").toString();
+    const accountHolder = (form.get("accountHolder") || "").toString();
+    const upi           = (form.get("upi")           || "").toString();
+    const paymentTerms  = (form.get("paymentTerms")  || "").toString();
+
+    const gstNumber = (form.get("gstNumber") || "").toString();
+    const panNumber = (form.get("panNumber") || "").toString();
+
+    const message = (form.get("message") || "").toString();
+
+    if (!username || !email || !phone || !passwordRaw || !panNumber || !vendorName) {
       return NextResponse.json({ error: "Required fields missing" }, { status: 400 });
     }
 
+    const password = await bcrypt.hash(passwordRaw, 10);
+    const registeredBy = who(me);
+
     const created = await prisma.vendor.create({
       data: {
-        firstName: get("firstName") || null,
-        lastName: get("lastName") || null,
-        vendorName,
+        firstName: firstName || null,
+        lastName:  lastName  || null,
         username,
-        email,
+        vendorName,
         phone,
-        password: await bcrypt.hash(passwordRaw, 10),
-        address: get("address"),
-        city: get("city"),
-        state: get("state"),
-        pinCode: get("pinCode"),
-        vendorType: get("vendorType"),
-        companyName: get("companyName"),
-        accountType: get("accountType"),
-        bankAccountNo: get("bankAccountNo"),
-        bankName: get("bankName"),
-        ifsc: get("ifsc"),
-        accountHolder: get("accountHolder"),
-        upi: get("upi") || null,
-        paymentTerms: get("paymentTerms"),
-        gstNumber: get("gstNumber") || null,
+        email,
+        password,
+        address,
+        city,
+        state,
+        pinCode,
+        vendorType,
+        companyName,
+        accountType,
+        bankAccountNo,
+        bankName,
+        ifsc,
+        accountHolder,
+        upi: upi || null,
+        paymentTerms,
+        gstNumber: gstNumber || null,
         panNumber,
-        message: get("message") || null,
-        registeredBy: who(me),
+        message: message || null,
+        registeredBy,
         kycBy: null,
         kycStatus: "pending",
       },
     });
 
-    // files
+    // optional files
     const baseDir = path.posix.join("uploads", "vendor", created.id);
-    const panImage = await saveFile(form.get("panImage") as any, baseDir, "pan");
-    const gstImage = await saveFile(form.get("gstImage") as any, baseDir, "gst");
-    const aadharCard = await saveFile(form.get("aadharCard") as any, baseDir, "aadhar");
-    const cancelCheque = await saveFile(form.get("cancelCheque") as any, baseDir, "cheque");
+    const panImageFile = form.get("panImage") as File | null;
+    const gstImageFile = form.get("gstImage") as File | null;
+    const aadharFile   = form.get("aadharCard") as File | null;
+    const chequeFile   = form.get("cancelCheque") as File | null;
+
+    const panImage    = await saveFileToPublicUploads(panImageFile as any, baseDir, "pan");
+    const gstImage    = await saveFileToPublicUploads(gstImageFile as any, baseDir, "gst");
+    const aadharCard  = await saveFileToPublicUploads(aadharFile as any,   baseDir, "aadhar");
+    const cancelCheque= await saveFileToPublicUploads(chequeFile as any,   baseDir, "cheque");
 
     if (panImage || gstImage || aadharCard || cancelCheque) {
       await prisma.vendor.update({
@@ -217,53 +247,60 @@ export async function POST(req: Request) {
 export async function PUT(req: Request) {
   const me = await getMe();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (me.status !== "active") return NextResponse.json({ error: "Inactive" }, { status: 403 });
-  if (!hasPerm(me, "Vendors:edit")) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!hasPerm(me, "vendor:edit")) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
-  const ct = req.headers.get("content-type") || "";
+  const contentType = req.headers.get("content-type") || "";
   try {
     let id = "";
     let data: any = {};
     let files: Record<string, File | null> = {};
 
-    if (ct.includes("multipart/form-data")) {
+    if (contentType.includes("multipart/form-data")) {
       const form = await req.formData();
       id = (form.get("id") || "").toString();
       if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
 
-      const take = (k: string) => (form.get(k) === null ? undefined : (form.get(k) as any).toString());
+      const take = (k: string) => {
+        const v = form.get(k);
+        if (v === null || v === undefined) return undefined;
+        return v.toString();
+      };
+
       data = {
         firstName: take("firstName"),
-        lastName: take("lastName"),
-        username: take("username"),
-        vendorName: take("vendorName"),
-        phone: take("phone"),
-        email: take("email"),
-        password: take("password"),
-        address: take("address"),
-        city: take("city"),
-        state: take("state"),
-        pinCode: take("pinCode"),
-        vendorType: take("vendorType"),
-        companyName: take("companyName"),
-        accountType: take("accountType"),
-        bankAccountNo: take("bankAccountNo"),
-        bankName: take("bankName"),
-        ifsc: take("ifsc"),
-        accountHolder: take("accountHolder"),
-        upi: take("upi"),
+        lastName:  take("lastName"),
+        username:  take("username"),
+        vendorName:take("vendorName"),
+        phone:     take("phone"),
+        email:     take("email"),
+        password:  take("password"),
+        address:   take("address"),
+        city:      take("city"),
+        state:     take("state"),
+        pinCode:   take("pinCode"),
+        vendorType:take("vendorType"),
+        companyName:take("companyName"),
+        accountType:take("accountType"),
+        bankAccountNo:take("bankAccountNo"),
+        bankName:  take("bankName"),
+        ifsc:      take("ifsc"),
+        accountHolder:take("accountHolder"),
+        upi:       take("upi"),
         paymentTerms: take("paymentTerms"),
         gstNumber: take("gstNumber"),
         panNumber: take("panNumber"),
-        message: take("message"),
+        message:   take("message"),
         registeredBy: take("registeredBy"),
         kycStatus: take("kycStatus"),
       };
+
       files = {
-        panImage: (form.get("panImage") as File) || null,
-        gstImage: (form.get("gstImage") as File) || null,
-        aadharCard: (form.get("aadharCard") as File) || null,
-        cancelCheque: (form.get("cancelCheque") as File) || null,
+        panImage:   (form.get("panImage")    as File) || null,
+        gstImage:   (form.get("gstImage")    as File) || null,
+        aadharCard: (form.get("aadharCard")  as File) || null,
+        cancelCheque:(form.get("cancelCheque") as File) || null,
       };
     } else {
       const body = await req.json();
@@ -273,31 +310,46 @@ export async function PUT(req: Request) {
       delete data.id;
     }
 
-    if (typeof data.kycStatus === "string" && data.kycStatus.length) data.kycBy = who(me);
-
-    if (data.password !== undefined) {
-      if (typeof data.password !== "string" || data.password.trim() === "") delete data.password;
-      else data.password = await bcrypt.hash(data.password, 10);
+    // kyc tagging
+    if (typeof data.kycStatus === "string" && data.kycStatus.length > 0) {
+      data.kycBy = who(me);
     }
 
+    // password hashing if provided
+    if (data.password !== undefined) {
+      if (typeof data.password !== "string" || data.password.trim() === "") {
+        delete data.password;
+      } else {
+        data.password = await bcrypt.hash(data.password, 10);
+      }
+    }
+
+    // auto vendorName if missing
     if ((!data.vendorName || !data.vendorName.trim()) && (data.firstName || data.lastName)) {
       data.vendorName = `${data.firstName || ""} ${data.lastName || ""}`.trim();
     }
+
+    // prune undefined
     Object.keys(data).forEach((k) => data[k] === undefined && delete data[k]);
 
     const old = await prisma.vendor.findUnique({ where: { id } });
     if (!old) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-    if (ct.includes("multipart/form-data")) {
+    // file writes
+    if (contentType.includes("multipart/form-data")) {
       const baseDir = path.posix.join("uploads", "vendor", id);
-      const panImage = await saveFile(files.panImage, baseDir, "pan");
-      const gstImage = await saveFile(files.gstImage, baseDir, "gst");
-      const aadharCard = await saveFile(files.aadharCard, baseDir, "aadhar");
-      const cancelCheque = await saveFile(files.cancelCheque, baseDir, "cheque");
-      if (panImage) data.panImage = panImage;
-      if (gstImage) data.gstImage = gstImage;
-      if (aadharCard) data.aadharCard = aadharCard;
-      if (cancelCheque) data.cancelCheque = cancelCheque;
+      const writeIfAny = async (f: File | null, base: string) =>
+        f && (f as any).size > 0 ? await saveFileToPublicUploads(f, baseDir, base) : null;
+
+      const panImage    = await writeIfAny(files.panImage, "pan");
+      const gstImage    = await writeIfAny(files.gstImage, "gst");
+      const aadharCard  = await writeIfAny(files.aadharCard, "aadhar");
+      const cancelCheque= await writeIfAny(files.cancelCheque, "cheque");
+
+      if (panImage)    data.panImage = panImage;
+      if (gstImage)    data.gstImage = gstImage;
+      if (aadharCard)  data.aadharCard = aadharCard;
+      if (cancelCheque)data.cancelCheque = cancelCheque;
     }
 
     const updated = await prisma.vendor.update({ where: { id }, data });
@@ -316,8 +368,9 @@ export async function PUT(req: Request) {
 export async function DELETE(req: Request) {
   const me = await getMe();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (me.status !== "active") return NextResponse.json({ error: "Inactive" }, { status: 403 });
-  if (!hasPerm(me, "Vendors:delete")) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!hasPerm(me, "vendor:delete")) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   try {
     const { ids } = await req.json();

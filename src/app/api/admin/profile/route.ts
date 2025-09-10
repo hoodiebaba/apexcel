@@ -10,7 +10,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-/** -------------- helpers -------------- */
+/* ---------------- helpers ---------------- */
 function stripSensitive(u: any) {
   if (!u) return u;
   const { password, permissions, createdAt, updatedAt, ...safe } = u;
@@ -26,31 +26,30 @@ function decodeToken(token?: string | null) {
   }
 }
 
-async function getDecodedFromReq(req: Request) {
-  // 1) Authorization: Bearer <token>
+/** Only accept admin_token (no sudo inside admin) */
+async function getAdminDecoded(req: Request) {
+  // 1) Authorization: Bearer <token> (optional)
   const authHeader = req.headers.get("authorization");
-  const bearer = authHeader?.startsWith("Bearer ")
-    ? authHeader.slice(7)
-    : null;
+  const bearer = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
   let decoded = decodeToken(bearer);
   if (decoded) return decoded;
 
-  // 2) httpOnly cookies
+  // 2) httpOnly cookie: admin_token only
   const jar = await cookies();
-  const adminTok = jar.get("admin_token")?.value;
-  const sudoTok = jar.get("sudo_token")?.value;
-  decoded = decodeToken(adminTok || sudoTok);
+  const adminTok = jar.get("admin_token")?.value || null;
+  decoded = decodeToken(adminTok);
   return decoded;
 }
 
 function resolvePhoto(userId: string, dbPhoto?: string) {
   const uploadRoot = path.join(process.cwd(), "public");
-  const dir = path.join(uploadRoot, "uploads", "profile", "admin", userId);
 
   if (dbPhoto && dbPhoto.startsWith("/uploads/")) {
     const abs = path.join(uploadRoot, dbPhoto.replace(/^\/+/, ""));
     if (fs.existsSync(abs)) return dbPhoto;
   }
+
+  const dir = path.join(uploadRoot, "uploads", "profile", "admin", userId);
   if (fs.existsSync(dir)) {
     const files = fs.readdirSync(dir).filter(Boolean);
     if (files.length) return `/uploads/profile/admin/${userId}/${files[0]}`;
@@ -58,9 +57,9 @@ function resolvePhoto(userId: string, dbPhoto?: string) {
   return "/user.png";
 }
 
+/** expire both cookies defensively and return JSON */
 function logoutResponse(json: Record<string, any>, status = 401) {
   const res = NextResponse.json(json, { status });
-  // expire both possible cookies to be safe
   res.cookies.set("admin_token", "", {
     httpOnly: true,
     sameSite: "lax",
@@ -76,42 +75,46 @@ function logoutResponse(json: Record<string, any>, status = 401) {
   return res;
 }
 
-/** -------------- GET (prefill) -------------- */
+/* ---------------- GET (prefill) ---------------- */
 export async function GET(req: Request) {
-  const decoded = await getDecodedFromReq(req);
-  if (!decoded) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const decoded = await getAdminDecoded(req);
+  if (!decoded) return logoutResponse({ error: "Unauthorized" }, 401);
 
   const user = await prisma.admin.findUnique({ where: { id: decoded.id } });
-  if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+  if (!user) return logoutResponse({ error: "Unauthorized" }, 401);
 
-  // role guard (admin area me sudo ko bhi allow kiya gaya hai)
-  if (user.role !== "admin" && user.role !== "sudo") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  // ❌ sudo not allowed in admin area
+  if (user.role !== "admin") {
+    return logoutResponse({ error: "Forbidden" }, 401);
   }
 
-  // status guard → inactive => force logout
+  // status gate — inactive => force logout
   if (user.status !== "active") {
     return logoutResponse({ error: "Account inactive" }, 401);
   }
 
   const photo = resolvePhoto(user.id, user.photo ?? undefined);
   const safe = stripSensitive(user);
-  return NextResponse.json({ user: { ...safe, name: user.name || "", photo } });
+
+  return NextResponse.json({
+    user: { ...safe, name: user.name || "", photo },
+  });
 }
 
-/** -------------- POST (update) -------------- */
+/* ---------------- POST (update) ---------------- */
 export async function POST(req: Request) {
-  const decoded = await getDecodedFromReq(req);
-  if (!decoded) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const decoded = await getAdminDecoded(req);
+  if (!decoded) return logoutResponse({ error: "Unauthorized" }, 401);
 
   const dbUser = await prisma.admin.findUnique({ where: { id: decoded.id } });
-  if (!dbUser) return NextResponse.json({ error: "User not found" }, { status: 404 });
+  if (!dbUser) return logoutResponse({ error: "Unauthorized" }, 401);
 
-  if (dbUser.role !== "admin" && dbUser.role !== "sudo") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  // ❌ sudo not allowed in admin area
+  if (dbUser.role !== "admin") {
+    return logoutResponse({ error: "Forbidden" }, 401);
   }
 
-  // status guard → inactive => logout + block update
+  // status gate — inactive => logout + block update
   if (dbUser.status !== "active") {
     return logoutResponse({ error: "Account inactive" }, 401);
   }
@@ -127,6 +130,7 @@ export async function POST(req: Request) {
       if (file && file.size > 0) {
         const uploadDir = path.join(process.cwd(), "public", "uploads", "profile", "admin", dbUser.id);
         if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+        // replace existing files
         for (const f of fs.readdirSync(uploadDir)) {
           try { fs.unlinkSync(path.join(uploadDir, f)); } catch {}
         }
@@ -140,17 +144,20 @@ export async function POST(req: Request) {
       formData.forEach((val, key) => {
         if (key === "file") return;
         const str = typeof val === "string" ? val : "";
+
         if (key === "password") {
           if (str.trim()) dataToUpdate.password = bcrypt.hashSync(str.trim(), 10);
           return;
         }
-        // hard block
+
+        // never client-settable
         if (["role", "status", "permissions", "id", "createdAt", "updatedAt"].includes(key)) return;
         dataToUpdate[key] = str;
       });
     } else {
       const body = await req.json();
       const { password, role, status, permissions, id, createdAt, updatedAt, ...rest } = body || {};
+
       if (password && String(password).trim()) {
         dataToUpdate.password = await bcrypt.hash(String(password).trim(), 10);
       }
@@ -172,7 +179,11 @@ export async function POST(req: Request) {
 
     const photo = resolvePhoto(dbUser.id, updated.photo ?? undefined);
     const safe = stripSensitive(updated);
-    return NextResponse.json({ success: true, user: { ...safe, name: updated.name || "", photo } });
+
+    return NextResponse.json({
+      success: true,
+      user: { ...safe, name: updated.name || "", photo },
+    });
   } catch (err) {
     console.error("ADMIN_PROFILE_UPDATE_FAILED", err);
     return NextResponse.json({ error: "Update failed", details: String(err) }, { status: 500 });

@@ -1,16 +1,14 @@
 // src/app/api/sudo/me/route.ts
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import { cookies } from "next/headers";
 import jwt from "jsonwebtoken";
 import path from "path";
 import fs from "fs";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic"; // no static caching
+export const dynamic = "force-dynamic";
 export const revalidate = 0;
-
-const prisma = new PrismaClient();
 
 function resolvePhoto(userId: string, dbPhoto?: string) {
   const root = path.join(process.cwd(), "public");
@@ -28,21 +26,29 @@ function resolvePhoto(userId: string, dbPhoto?: string) {
 
 export async function GET() {
   try {
-    // ✅ await cookies()
-    const cookieStore = await cookies();
-    const token = cookieStore.get("sudo_token")?.value;
+    const jar = await cookies();
+    const token = jar.get("sudo_token")?.value;
     if (!token) return NextResponse.json({ loggedIn: false }, { status: 200 });
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || "apex-secret") as any;
+    const d = jwt.verify(token, process.env.JWT_SECRET || "apex-secret") as any;
 
     const user = await prisma.admin.findUnique({
-      where: { id: decoded.id },
+      where: { id: d.id },
       select: {
-        id: true, role: true, username: true, name: true, email: true, photo: true,
+        id: true,
+        role: true,
+        username: true,
+        name: true,
+        email: true,
+        photo: true,
+        status: true,
       },
     });
 
-    if (!user || user.role !== "sudo") {
+    if (!user || String(user.role).toLowerCase() !== "sudo") {
+      return NextResponse.json({ loggedIn: false }, { status: 200 });
+    }
+    if (String(user.status).toLowerCase() !== "active") {
       return NextResponse.json({ loggedIn: false }, { status: 200 });
     }
 
@@ -59,7 +65,7 @@ export async function GET() {
         photo,
       },
     });
-  } catch (e) {
+  } catch {
     return NextResponse.json({ loggedIn: false }, { status: 200 });
   }
 }

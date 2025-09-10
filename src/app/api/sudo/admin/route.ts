@@ -1,3 +1,4 @@
+// /app/api/sudo/admin/route.ts
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import bcrypt from "bcrypt";
@@ -63,7 +64,6 @@ function expandPerms(list?: string[]): PermMatrix {
 /** strip sensitive fields before sending to client */
 function serializeAdmin(a: any) {
   const { password, ...rest } = a;
-  // expand permissions for UI convenience
   return { ...rest, permissions: expandPerms(a.permissions) };
 }
 
@@ -77,6 +77,41 @@ function normalizeRole(role?: string) {
 function normalizeStatus(status?: string) {
   const s = String(status || "active").toLowerCase();
   return s === "inactive" ? "inactive" : "active";
+}
+
+/** ============ Role caps (no DB change) ============ */
+const MAX_ACTIVE_SUDO = 1;
+const MAX_ACTIVE_ADMINS = 2;
+
+// Count helpers
+async function countActiveByRole(role: "sudo" | "admin", excludeId?: string) {
+  return prisma.admin.count({
+    where: {
+      role,
+      status: { equals: "active" },
+      ...(excludeId ? { id: { not: excludeId } } : {}),
+    },
+  });
+}
+
+/**
+ * Validate caps BEFORE create/update.
+ * - nextRole/nextStatus are the values that will be persisted.
+ */
+async function assertRoleCaps(nextRole: "sudo" | "admin", nextStatus: "active" | "inactive", excludeId?: string) {
+  if (nextStatus !== "active") return; // making inactive never violates caps
+
+  if (nextRole === "sudo") {
+    const activeSudo = await countActiveByRole("sudo", excludeId);
+    if (activeSudo >= MAX_ACTIVE_SUDO) {
+      throw Object.assign(new Error("Only one active sudo allowed."), { code: 409 });
+    }
+  } else {
+    const activeAdmins = await countActiveByRole("admin", excludeId);
+    if (activeAdmins >= MAX_ACTIVE_ADMINS) {
+      throw Object.assign(new Error("Only two active admins allowed."), { code: 409 });
+    }
+  }
 }
 
 /* ===========================
@@ -112,7 +147,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // enforce unique manually for nicer error msg
+    // unique check for nice message
     const clash = await prisma.admin.findFirst({
       where: { OR: [{ username }, { email }] },
       select: { id: true },
@@ -123,6 +158,12 @@ export async function POST(req: Request) {
         { status: 409 }
       );
     }
+
+    const nextRole = normalizeRole(body.role) as "admin" | "sudo";
+    const nextStatus = normalizeStatus(body.status) as "active" | "inactive";
+
+    // CAP CHECK (create)
+    await assertRoleCaps(nextRole, nextStatus);
 
     const hashed = await bcrypt.hash(password, 10);
 
@@ -135,7 +176,7 @@ export async function POST(req: Request) {
         firstName: body.firstName || null,
         lastName: body.lastName || null,
         phone: body.phone || null,
-        role: normalizeRole(body.role),
+        role: nextRole,
         bio: body.bio || null,
         socialUrls: body.socialUrls ?? null,
         address: body.address || null,
@@ -151,19 +192,18 @@ export async function POST(req: Request) {
         bankAccountNo: body.bankAccountNo || null,
         upi: body.upi || null,
         gstNumber: body.gstNumber || null,
-        status: normalizeStatus(body.status),
+        status: nextStatus,
         permissions: flattenPerms(body.permissions),
-        // photo intentionally NOT accepted here per requirement
-        // (photo handled on the dedicated profile route)
       },
     });
 
     return NextResponse.json(serializeAdmin(newAdmin), { status: 201 });
   } catch (error: any) {
     console.error("POST Admin Error:", error);
+    const code = error?.code === 409 ? 409 : 500;
     return NextResponse.json(
       { error: error?.message || "Internal Server Error" },
-      { status: 500 }
+      { status: code }
     );
   }
 }
@@ -177,6 +217,16 @@ export async function PUT(req: Request) {
     const id = String(body.id || "");
     if (!id) return NextResponse.json({ error: "ID required" }, { status: 400 });
 
+    // read current user to compute nextRole/nextStatus properly
+    const current = await prisma.admin.findUnique({ where: { id } });
+    if (!current) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    const nextRole = body.role ? normalizeRole(body.role) as "admin" | "sudo" : (current.role as "admin" | "sudo");
+    const nextStatus = body.status ? (normalizeStatus(body.status) as "active" | "inactive") : (current.status as "active" | "inactive");
+
+    // CAP CHECK (update) — exclude current id from counts
+    await assertRoleCaps(nextRole, nextStatus, id);
+
     const updateData: any = {
       name: body.name ?? undefined,
       firstName: body.firstName ?? undefined,
@@ -184,7 +234,7 @@ export async function PUT(req: Request) {
       username: body.username ?? undefined,
       email: body.email?.toLowerCase() ?? undefined,
       phone: body.phone ?? undefined,
-      role: body.role ? normalizeRole(body.role) : undefined,
+      role: body.role ? nextRole : undefined,
       bio: body.bio ?? undefined,
       socialUrls: body.socialUrls ?? undefined,
       address: body.address ?? undefined,
@@ -200,7 +250,7 @@ export async function PUT(req: Request) {
       bankAccountNo: body.bankAccountNo ?? undefined,
       upi: body.upi ?? undefined,
       gstNumber: body.gstNumber ?? undefined,
-      status: body.status ? normalizeStatus(body.status) : undefined,
+      status: body.status ? nextStatus : undefined,
       permissions: body.permissions ? flattenPerms(body.permissions) : undefined,
     };
 
@@ -209,7 +259,6 @@ export async function PUT(req: Request) {
       updateData.password = await bcrypt.hash(newPassword, 10);
     }
 
-    // never allow setting photo here (kept to profile route)
     delete updateData.photo;
 
     const updated = await prisma.admin.update({
@@ -218,9 +267,10 @@ export async function PUT(req: Request) {
     });
 
     return NextResponse.json(serializeAdmin(updated));
-  } catch (error) {
+  } catch (error: any) {
     console.error("PUT Admin Error:", error);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    const code = error?.code === 409 ? 409 : 500;
+    return NextResponse.json({ error: error?.message || "Internal Server Error" }, { status: code });
   }
 }
 

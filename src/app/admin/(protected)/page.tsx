@@ -1,3 +1,4 @@
+// src/app/admin/page.tsx  (Dashboard)
 "use client";
 
 import React, { useEffect, useState } from "react";
@@ -17,13 +18,7 @@ interface DashboardData {
   };
   activeLoads: { ratio: number; subtitle: string };
   monthlyLoads: { month: string; count: number }[];
-  recentUsers: {
-    name: string;
-    type: string;
-    company: string | null;
-    phone: string;
-    kycStatus: string;
-  }[];
+  recentUsers: { name: string; type: string; company: string | null; phone: string; kycStatus: string }[];
 }
 
 export default function AdminDashboardPage() {
@@ -33,17 +28,20 @@ export default function AdminDashboardPage() {
   const router = useRouter();
 
   useEffect(() => {
-    const ac = new AbortController();
+    let alive = true; // 👈 unmount guard (no AbortController => no red "canceled")
 
     (async () => {
       try {
         const res = await fetch("/api/admin/dashboard", {
           cache: "no-store",
           credentials: "include",
-          signal: ac.signal,
+          headers: { "x-req-id": Date.now().toString() }, // tiny dedupe hint
         });
 
+        if (!alive) return;
+
         if (res.status === 401) {
+          // server side will have expired cookies already if inactive/unauth
           router.replace("/admin/login");
           return;
         }
@@ -58,14 +56,16 @@ export default function AdminDashboardPage() {
 
         const json = (await res.json()) as DashboardData;
         setData(json);
-      } catch (e) {
-        if (!ac.signal.aborted) setError("other");
+      } catch {
+        if (alive) setError("other");
       } finally {
-        if (!ac.signal.aborted) setLoading(false);
+        if (alive) setLoading(false);
       }
     })();
 
-    return () => ac.abort();
+    return () => {
+      alive = false;
+    };
   }, [router]);
 
   if (loading) return <p className="text-center text-gray-400">Loading...</p>;
@@ -75,7 +75,11 @@ export default function AdminDashboardPage() {
       <div className="max-w-2xl mx-auto p-8">
         <h2 className="text-xl font-semibold mb-2">No access to Dashboard</h2>
         <p className="text-sm text-gray-600">
-          You Do Not Have <code className="font-mono px-1 py-0.5 rounded bg-gray-100">Dashboard:page_view</code> Permission Contact Your Administrator.
+          You do not have{" "}
+          <code className="font-mono px-1 py-0.5 rounded bg-gray-100">
+            Dashboard:page_view
+          </code>{" "}
+          permission. Contact your administrator.
         </p>
       </div>
     );

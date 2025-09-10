@@ -1,12 +1,32 @@
+// src/app/admin/login/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
+function getOrCreateDeviceId() {
+  try {
+    const k = "__admin_dev_id__";
+    let id = localStorage.getItem(k);
+    if (!id) {
+      id = crypto.randomUUID?.() || Math.random().toString(36).slice(2) + Date.now();
+      localStorage.setItem(k, id);
+    }
+    return id;
+  } catch {
+    return Math.random().toString(36).slice(2) + Date.now();
+  }
+}
+
 export default function AdminLoginPage() {
   const [error, setError] = useState("");
   const [checking, setChecking] = useState(true);
+  const [deviceId, setDeviceId] = useState("");
   const router = useRouter();
+
+  useEffect(() => {
+    setDeviceId(getOrCreateDeviceId());
+  }, []);
 
   useEffect(() => {
     // already logged-in? → go to /admin
@@ -14,8 +34,11 @@ export default function AdminLoginPage() {
       try {
         const res = await fetch("/api/admin/me", { credentials: "include", cache: "no-store" });
         if (res.ok) {
-          router.replace("/admin");
-          return;
+          const data = await res.json();
+          if (data?.loggedIn) {
+            router.replace("/admin");
+            return;
+          }
         }
       } catch {}
       setChecking(false);
@@ -35,15 +58,19 @@ export default function AdminLoginPage() {
     try {
       const res = await fetch("/api/admin/login", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-device-id": deviceId || "", // ✅ device header
+        },
         body: JSON.stringify(payload),
         credentials: "include",
+        cache: "no-store",
       });
 
       const data = await res.json();
 
       if (res.ok) {
-        router.replace("/admin"); // role=admin/sudo → /admin
+        router.replace("/admin");
       } else {
         setError(data.message || "Login failed");
       }
@@ -64,11 +91,13 @@ export default function AdminLoginPage() {
         {error && <p className="text-red-500 mb-4">{error}</p>}
 
         <input name="username" placeholder="Username" className="border w-full p-2 mb-4 rounded" required />
-        <input type="password" name="password" placeholder="Password" className="border w-full p-2 mb-4 rounded" required />
+        <input type="password" name="password" placeholder="Password" className="border w-full p-2 mb-6 rounded" required />
 
         <button type="submit" className="bg-blue-600 text-white w-full py-2 rounded hover:bg-blue-700">
           Login
         </button>
+
+        <p className="text-xs text-gray-500 mt-3">Note: Admin account ek hi device par lock rahega.</p>
       </form>
     </div>
   );

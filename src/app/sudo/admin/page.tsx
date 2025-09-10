@@ -1,3 +1,4 @@
+// /app/(sudo)/admin/page.tsx   (ya jahan aapki page file hai)
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -5,7 +6,7 @@ import {
   Table, TableBody, TableCell, TableHeader, TableRow,
 } from "@/components/ui/table";
 import Badge from "@/components/ui/badge/Badge";
-import { UserPlus, BadgeInfo, SquarePen, Trash2, Phone, Mail, X } from "lucide-react";
+import { UserPlus, BadgeInfo, SquarePen, Trash2, Phone, Mail, X, AlertTriangle } from "lucide-react";
 
 /* ---------- constants shared with backend ---------- */
 const PAGES = [
@@ -44,7 +45,7 @@ type Admin = {
   phone: string | null;
   role: "admin" | "sudo" | string;
   bio?: string | null;
-  socialUrls?: Record<string, string> | null;
+  socialUrls?: Record<string, any> | null;
   address?: string | null;
   country?: string | null;
   state?: string | null;
@@ -58,7 +59,7 @@ type Admin = {
   ifsc?: string | null;
   bankAccountNo?: string | null;
   upi?: string | null;
-  permissions: PermMatrix | string[]; // API returns matrix; keep union for safety
+  permissions: PermMatrix | string[];
   createdAt: string;
   updatedAt: string;
   status?: "active" | "inactive" | string;
@@ -72,12 +73,10 @@ function emptyMatrix(): PermMatrix {
   }
   return obj;
 }
-
 function isMatrix(x: any): x is PermMatrix {
   return x && typeof x === "object" && PAGES.every((p) => x[p]);
 }
 
-/* UI */
 export default function AdminPage() {
   const [admins, setAdmins] = useState<Admin[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -86,14 +85,25 @@ export default function AdminPage() {
   const [step, setStep] = useState(1);
   const [editMode, setEditMode] = useState(false);
   const [createMode, setCreateMode] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const loadAdmins = async () => {
     const res = await fetch("/api/sudo/admin", { cache: "no-store" });
     const data = await res.json();
     setAdmins(data);
   };
-
   useEffect(() => { loadAdmins(); }, []);
+
+  // Simple live caps (UI hint only; real enforcement backend pe hai)
+  const activeSudoCount = useMemo(
+    () => admins.filter(a => a.role === "sudo" && String(a.status).toLowerCase() === "active").length,
+    [admins]
+  );
+  const activeAdminCount = useMemo(
+    () => admins.filter(a => a.role === "admin" && String(a.status).toLowerCase() === "active").length,
+    [admins]
+  );
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) =>
@@ -113,13 +123,15 @@ export default function AdminPage() {
   };
 
   const openView = (mode: "view" | "edit" | "create") => {
+    setErrorMsg(null);
     if (mode === "create") {
       setViewAdmin(null);
       setFormData({
         role: "admin",
-        status: "Active",
+        status: "active",
         permissions: emptyMatrix(),
-      });
+        password: "",
+      } as any);
       setEditMode(true);
       setCreateMode(true);
       setStep(1);
@@ -130,7 +142,7 @@ export default function AdminPage() {
     setViewAdmin(admin);
     setFormData({
       ...(admin || {}),
-      password: "", // blank in UI
+      password: "",
       permissions: isMatrix(admin?.permissions)
         ? admin?.permissions
         : emptyMatrix(),
@@ -154,27 +166,28 @@ export default function AdminPage() {
   };
 
   const handleSave = async () => {
-    const payload: any = { ...formData };
-    // ensure role/status conform + permissions matrix sent as-is (API accepts matrix)
-    if (createMode) {
+    setSaving(true);
+    setErrorMsg(null);
+    try {
+      const payload: any = { ...formData };
       const res = await fetch("/api/sudo/admin", {
-        method: "POST",
+        method: createMode ? "POST" : "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!res.ok) alert("Create failed");
-    } else if (payload.id) {
-      const res = await fetch("/api/sudo/admin", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) alert("Update failed");
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        const msg = j?.error || (res.status === 409 ? "Role capacity limit reached." : "Save failed");
+        setErrorMsg(msg);
+        return;
+      }
+      setViewAdmin(null);
+      setEditMode(false);
+      setCreateMode(false);
+      await loadAdmins();
+    } finally {
+      setSaving(false);
     }
-    setViewAdmin(null);
-    setEditMode(false);
-    setCreateMode(false);
-    loadAdmins();
   };
 
   const selectedAll = useMemo(
@@ -182,22 +195,37 @@ export default function AdminPage() {
     [selectedIds, admins]
   );
 
+  // Small helper to show caps hint (UI only)
+  const capsHint = (
+    <div className="flex items-center gap-3 text-xs text-gray-600 dark:text-gray-400">
+      <div className="flex items-center gap-1">
+        <AlertTriangle size={14} /> <b>Limits:</b>
+      </div>
+      <span>1 active sudo (now: {activeSudoCount})</span>
+      <span>•</span>
+      <span>2 active admins (now: {activeAdminCount})</span>
+    </div>
+  );
+
   return (
     <div className="p-6">
       {/* Actions */}
-      <div className="flex items-center justify-start mb-6 gap-3">
-        <button onClick={() => openView("create")} className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 bg-white hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700">
-          <UserPlus size={16} /> Create
-        </button>
-        <button onClick={() => openView("edit")} className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 bg-white hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700">
-          <SquarePen size={16} /> Edit
-        </button>
-        <button onClick={() => openView("view")} className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 bg-white hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700">
-          <BadgeInfo size={16} /> View
-        </button>
-        <button onClick={handleDelete} className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 bg-white hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700">
-          <Trash2 size={16} /> Delete
-        </button>
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <button onClick={() => openView("create")} className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 bg-white hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700">
+            <UserPlus size={16} /> Create
+          </button>
+          <button onClick={() => openView("edit")} className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 bg-white hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700">
+            <SquarePen size={16} /> Edit
+          </button>
+          <button onClick={() => openView("view")} className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 bg-white hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700">
+            <BadgeInfo size={16} /> View
+          </button>
+          <button onClick={handleDelete} className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 bg-white hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700">
+            <Trash2 size={16} /> Delete
+          </button>
+        </div>
+        {capsHint}
       </div>
 
       {/* Table */}
@@ -248,8 +276,8 @@ export default function AdminPage() {
                     </TableCell>
                     <TableCell className="px-5 py-3">{admin.role}</TableCell>
                     <TableCell className="px-5 py-3">
-                      <Badge size="sm" color={admin.status === "Inactive" ? "warning" : "success"}>
-                        {admin.status ?? "Active"}
+                      <Badge size="sm" color={String(admin.status).toLowerCase() === "inactive" ? "warning" : "success"}>
+                        {String(admin.status || "active").toUpperCase()}
                       </Badge>
                     </TableCell>
                   </TableRow>
@@ -270,16 +298,26 @@ export default function AdminPage() {
                 setViewAdmin(null);
                 setEditMode(false);
                 setCreateMode(false);
+                setErrorMsg(null);
               }}
             >
               <X size={22} />
             </button>
 
             <div className="p-6 space-y-5">
+              {errorMsg && (
+                <div className="text-sm px-3 py-2 rounded bg-red-50 text-red-700 border border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800">
+                  {errorMsg}
+                </div>
+              )}
+
               {/* Step 1: Basic */}
               {step === 1 && (
                 <>
-                  <h3 className="text-lg font-semibold">Basic Info</h3>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-lg font-semibold">Basic Info</h3>
+                    {capsHint}
+                  </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {[
                       ["name", "Name"],
@@ -304,7 +342,6 @@ export default function AdminPage() {
                         </div>
                       )
                     )}
-                    {/* Password always blank in UI */}
                     {editMode && (
                       <input
                         className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
@@ -459,7 +496,7 @@ export default function AdminPage() {
             <div className="flex justify-between items-center border-t border-gray-200 dark:border-gray-700 p-4">
               <button
                 onClick={() => setStep((s) => Math.max(1, s - 1))}
-                disabled={step === 1}
+                disabled={step === 1 || saving}
                 className="px-4 py-2 rounded-lg text-sm border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-400 disabled:opacity-50"
               >
                 Back
@@ -468,14 +505,15 @@ export default function AdminPage() {
                 {editMode && step === 5 && (
                   <button
                     onClick={handleSave}
-                    className="px-4 py-2 rounded-lg text-sm bg-blue-600 text-white hover:bg-blue-700"
+                    disabled={saving}
+                    className={`px-4 py-2 rounded-lg text-sm text-white ${saving ? "bg-blue-400" : "bg-blue-600 hover:bg-blue-700"}`}
                   >
-                    Save
+                    {saving ? "Saving..." : "Save"}
                   </button>
                 )}
                 <button
                   onClick={() => setStep((s) => Math.min(5, s + 1))}
-                  disabled={step === 5}
+                  disabled={step === 5 || saving}
                   className="px-4 py-2 rounded-lg text-sm border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-400 disabled:opacity-50"
                 >
                   Next

@@ -17,8 +17,8 @@ export async function POST() {
   res.cookies.set("sudo_token", "", {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",       // ✅ consistency
-    expires: new Date(0),  // immediately expire
+    sameSite: "lax",
+    expires: new Date(0),
     path: "/",
   });
 
